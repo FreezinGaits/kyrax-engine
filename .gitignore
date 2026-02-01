@@ -214,4 +214,5 @@ __marimo__/
 /test.py
 /test2.py
 /testing.txt
-/chrome-profile
+/chrome-profile/
+/models/
