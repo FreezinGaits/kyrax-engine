@@ -1,0 +1,14 @@
+# Core
+fastapi
+uvicorn
+pydantic
+
+# Whisper (choose one)
+openai-whisper      # or 'faster-whisper' if you prefer
+
+# Optional (mic recording)
+sounddevice
+soundfile
+
+# For audio handling / system
+ffmpeg  # cannot be pip-installed — install system-wide and add to PATH
