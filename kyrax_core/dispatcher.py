@@ -70,3 +70,20 @@ class Dispatcher:
                 return SkillResult(False, f"Execution exceeded timeout {timeout_s}s (elapsed {elapsed:.2f}s)")
 
         return result
+
+    def dispatch(self, command: Command, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Alternative API for chain_executor compatibility.
+        Wraps execute() and returns a dict-like result instead of SkillResult.
+        
+        This allows chain_executor and other components expecting dict results to work
+        with the real Dispatcher without modification.
+        """
+        result = self.execute(command, context=context)
+        # Convert SkillResult to dict format expected by chain_executor
+        return {
+            "success": result.success,
+            "message": result.message,
+            "code": result.code,
+            **(result.data or {})
+        }

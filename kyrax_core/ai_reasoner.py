@@ -165,6 +165,14 @@ class AIReasoner:
         proposals = self.suggest_plans(goal_text, context=context, n=max_candidates)
         result = []
         for p in proposals:
+            # 🚨 Clarification-only plan: do NOT try to validate or execute
+            if (
+                len(p.proposed_commands) == 1
+                and p.proposed_commands[0].intent == "ask_clarify"
+            ):
+                result.append((p, []))
+                continue
+
             validated_steps = []
             for pc in p.proposed_commands:
                 cmd = pc.to_command(default_domain=pc.domain or "generic", source="ai")
@@ -289,6 +297,20 @@ class AIReasoner:
             raw_steps = item.get("steps", []) or []
 
             for idx, s in enumerate(raw_steps):
+                if s.get("intent") == "ask_clarify":
+                    # Make clarification plans have a single ProposedCommand so shape is consistent.
+                    question_text = s.get("entities", {}).get("question", "Clarification required")
+                    return [
+                        PlanProposal(
+                            plan_id=str(uuid.uuid4()),
+                            proposed_commands=[
+                                ProposedCommand(intent="ask_clarify", entities={"question": question_text}, domain="system", confidence=0.0, note="Clarification requested")
+                            ],
+                            explanation=question_text,
+                            score=0.0,
+                        )
+                    ]
+
                 intent = s.get("intent")
                 domain = s.get("domain")
                 confidence = float(s.get("confidence", 0.6) or 0.6)

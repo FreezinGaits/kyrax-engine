@@ -363,6 +363,8 @@ Notes:
 - For persistent WhatsApp Web session, provide profile_dir (persistent user_data directory).
 - headless=False required for QR scanning on first run.
 - Works with Chromium by default; change to firefox/webkit if desired.
+- Playwright sync API is run in a dedicated worker thread to avoid "Sync API inside asyncio loop" errors
+  when the pipeline runs in an environment that has an asyncio event loop (e.g. Cursor, some IDEs).
 """
 
 # skills/whatsapp_skill.py
@@ -370,19 +372,36 @@ import time
 import json
 import re
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Dict, Any, Optional
-import shutil, platform, subprocess
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
-class PlaywrightManager:
-    _pw = None
+# Thread-local state for Playwright in the worker thread (avoids asyncio conflict on main thread)
+_worker_tls = threading.local()
 
-    @classmethod
-    def get(cls):
-        if cls._pw is None:
-            cls._pw = sync_playwright().start()
-        return cls._pw
+def _get_worker_state():
+    """Return Playwright state for current thread; None if not in worker or not yet initialized."""
+    return getattr(_worker_tls, "state", None)
+
+class PlaywrightManager:
+    """
+    Playwright MUST be thread-local.
+    Never share Playwright instances across threads.
+    """
+    @staticmethod
+    def get():
+        ws = _get_worker_state()
+        if ws is None:
+            raise RuntimeError("PlaywrightManager.get() called outside worker thread")
+
+        if not getattr(ws, "pw", None):
+            ws.pw = sync_playwright().start()
+
+        return ws.pw
+
 
 # Skill contract import
 try:
@@ -424,22 +443,32 @@ class WhatsAppSkill(Skill):
         self._pw = None
         self._context = None
         self._page = None
-    
+        # Single-thread executor so all Playwright sync API runs in one thread (no asyncio loop there)
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wa_playwright")
+
+    def _state(self):
+        """Return (context, page) from worker thread state or from self (main thread / legacy)."""
+        ws = _get_worker_state()
+        if ws is not None:
+            return ws.context, ws.page
+        return self._context, self._page
+
     # ---------- page/context health helpers ----------
     def _is_context_alive(self) -> bool:
-        if not self._context:
+        context, _ = self._state()
+        if not context:
             return False
         try:
-            # simple check accessing pages; will raise if closed
-            _ = self._context.pages
+            _ = context.pages
             return True
         except Exception:
             return False
 
     def _ensure_browser(self):
+        context, page = self._state()
+        ws = _get_worker_state()
         # If context dead, recreate it
         if not self._is_context_alive():
-            # start playwright if needed
             pw = PlaywrightManager.get()
             browser_launcher = {
                 "chromium": pw.chromium,
@@ -451,62 +480,90 @@ class WhatsAppSkill(Skill):
             os.makedirs(user_data_dir, exist_ok=True)
 
             try:
-                self._context = browser_launcher.launch_persistent_context(
+                context = browser_launcher.launch_persistent_context(
                     user_data_dir,
                     headless=self.headless,
                     viewport={"width": 1280, "height": 700}
                 )
             except PlaywrightError as e:
-                self._context = None
+                if ws:
+                    ws.context = None
+                else:
+                    self._context = None
                 raise RuntimeError(f"Playwright launch failed: {e}")
 
-        # reuse or open a page
-        try:
-            if self._context.pages:
-                self._page = self._context.pages[0]
+            if ws is not None:
+                ws.pw = pw
+                ws.context = context
+                ws.page = None
             else:
-                self._page = self._context.new_page()
+                self._context = context
+                self._page = None
+
+        context, _ = self._state()
+        try:
+            if context.pages:
+                page = context.pages[0]
+            else:
+                page = context.new_page()
+            if ws is not None:
+                ws.page = page
+            else:
+                self._page = page
         except Exception:
-            # Attempt re-create context once
             try:
-                if self._context:
+                if context:
                     try:
-                        self._context.close()
+                        context.close()
                     except Exception:
                         pass
-                self._context = None
+                if ws is not None:
+                    ws.context = None
+                    ws.page = None
+                else:
+                    self._context = None
+                    self._page = None
                 self._ensure_browser()
             except Exception as e:
                 raise
 
-        # ensure we are on whatsapp
+        _, page = self._state()
         try:
-            if "web.whatsapp.com" not in (self._page.url or ""):
-                self._page.goto("https://web.whatsapp.com", timeout=60000)
-            # wait for search box (signal that WA UI is ready)
-            self._page.wait_for_selector('div[aria-label="Search input textbox"]', timeout=60000)
+            if "web.whatsapp.com" not in (page.url or ""):
+                page.goto("https://web.whatsapp.com", timeout=60000)
+            page.wait_for_selector(
+                'div[aria-label="Search input textbox"], canvas[aria-label="Scan me!"]',
+                timeout=60000
+            )
+
         except PlaywrightTimeoutError:
-            # proceed — sometimes UI takes longer; caller will detect failures
             pass
 
     def _cleanup(self):
-        try:
-            if self._context:
-                try:
-                    self._context.close()
-                except Exception:
-                    pass
-                self._context = None
-            if PlaywrightManager._pw:
-                # don't stop global playwright right away; keep it running for shared use
-                try:
-                    PlaywrightManager._pw = None
-                except Exception:
-                    pass
-            self._page = None
-        except Exception:
+        """Clean up browser. If called from main thread, run cleanup in worker thread."""
+        ws = _get_worker_state()
+        if ws is not None:
+            target_context = ws.context
+            try:
+                if target_context:
+                    try:
+                        target_context.close()
+                    except Exception:
+                        pass
+                ws.context = None
+                ws.page = None
+            except Exception:
+                ws.context = None
+                ws.page = None
+        else:
+            # Main thread: ask worker thread to close its browser
+            try:
+                self._executor.submit(self._cleanup_in_worker).result(timeout=10)
+            except Exception:
+                pass
             self._context = None
             self._page = None
+            pass
 
     # ---------------- helpers ----------------
     def _find_and_open_chat(self, contact_query: str, timeout: int = 20000) -> bool:
@@ -516,7 +573,7 @@ class WhatsAppSkill(Skill):
         This function is more robust: exact -> contains -> first-result fallback.
         """
         self._ensure_browser()
-        page = self._page
+        _, page = self._state()
         if not page:
             return False
 
@@ -604,7 +661,7 @@ class WhatsAppSkill(Skill):
         """
         Type message into message box and click the visible send button (avoid relying on Enter).
         """
-        page = self._page
+        _, page = self._state()
         if not page:
             return False
 
@@ -681,6 +738,41 @@ class WhatsAppSkill(Skill):
 
         return True
 
+    def _cleanup_in_worker(self):
+        """Run in worker thread to close browser/context held in thread-local state."""
+        state = _get_worker_state()
+        if state and getattr(state, "context", None):
+            try:
+                state.context.close()
+            except Exception:
+                pass
+            state.context = None
+            state.page = None
+
+    def _do_send_in_thread(self, contact_query: str, text: str) -> SkillResult:
+        """
+        Run Playwright (sync API) in this worker thread only.
+        Avoids "Sync API inside asyncio loop" when the main thread has an event loop.
+        """
+        if _get_worker_state() is None:
+            _worker_tls.state = SimpleNamespace(pw=None, context=None, page=None)
+        try:
+            opened = self._find_and_open_chat(contact_query)
+            if not opened:
+                return SkillResult(False, f"Contact '{contact_query}' not found", {"contact_query": contact_query})
+            sent = self._send_text(text)
+            if not sent:
+                return SkillResult(False, "Failed to send message (send action failed)")
+            return SkillResult(True, f"Message sent to {contact_query}", {"text": text, "contact_query": contact_query})
+        except Exception as e:
+            return SkillResult(False, f"Exception during send: {e}")
+        finally:
+            if self.close_on_finish:
+                try:
+                    self._cleanup()
+                except Exception:
+                    pass
+
     # ---------------- public execute ----------------
     def execute(self, command: Command, context: Optional[Dict[str, Any]] = None) -> SkillResult:
         contact = (command.entities or {}).get("contact") or (command.entities or {}).get("to")
@@ -691,7 +783,7 @@ class WhatsAppSkill(Skill):
         if not contact:
             return SkillResult(False, "No contact provided")
 
-        # resolve contact from registry or accept phone number
+        # resolve contact from registry or accept phone number (main thread)
         cinfo = self.contacts.get(contact) or next(
             (v for k, v in self.contacts.items() if k.lower() == str(contact).lower()), None
         )
@@ -700,51 +792,31 @@ class WhatsAppSkill(Skill):
             contact_query = cinfo.get("whatsapp_name") or cinfo.get("name") or cinfo.get("phone") or contact
         else:
             s = str(contact).strip()
-            # remove trailing parenthetical e.g., "Gautam Sharma (You)"
             s_clean = re.sub(r'\s*\(.*\)$', '', s).strip()
-            # if looks like phone number
             digits = re.sub(r'\D', '', s_clean)
             if digits and len(digits) >= 7:
                 contact_query = digits
             else:
-                # Try fuzzy match against contacts keys (case-insensitive substring)
                 matches = []
                 qlow = s_clean.lower()
                 for k, v in self.contacts.items():
                     if qlow == k.lower() or qlow in k.lower() or k.lower() in qlow:
                         matches.append((k, v))
                 if len(matches) == 1:
-                    # exact one candidate -> auto use it
                     k, v = matches[0]
                     contact_query = v.get("whatsapp_name") or v.get("name") or v.get("phone") or k
                 elif len(matches) > 1:
-                    # ambiguous -> return failure so upper layer can prompt
                     return SkillResult(False, "Ambiguous contact; multiple matches", {"candidates": [m[0] for m in matches]})
                 else:
-                    # fallback use cleaned phrase (let WA search do its best)
                     contact_query = s_clean
 
+        # Run all Playwright sync API in a dedicated thread (no asyncio loop there)
         try:
-            # If page/context died earlier, _ensure_browser will recreate
-            opened = self._find_and_open_chat(contact_query)
-            if not opened:
-                return SkillResult(False, f"Contact '{contact_query}' not found", {"contact_query": contact_query})
-
-            sent = self._send_text(text)
-            if not sent:
-                return SkillResult(False, "Failed to send message (send action failed)")
-
-            return SkillResult(True, f"Message sent to {contact_query}", {"text": text, "contact_query": contact_query})
+            future = self._executor.submit(self._do_send_in_thread, contact_query, text)
+            return future.result(timeout=120)
         except Exception as e:
-            # If a browser/context was closed mid-execution, cleanup and report failure
-            try:
-                self._cleanup()
-            except Exception:
-                pass
+            if contact_query is None:
+                # helpful debug for developer
+                return SkillResult(False, f"Contact '{contact}' not found", {"contact_query": contact})
+
             return SkillResult(False, f"Exception during send: {e}")
-        finally:
-            if self.close_on_finish:
-                try:
-                    self._cleanup()
-                except Exception:
-                    pass

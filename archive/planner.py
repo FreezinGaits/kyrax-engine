@@ -2,7 +2,7 @@
 from typing import List, Dict, Any, Optional
 import re
 from datetime import datetime
-from .command import Command
+from kyrax_core.command import Command
 
 # small mapping of intents -> domains (keep consistent with intent_mapper / command_builder)
 INTENT_TO_DOMAIN = {

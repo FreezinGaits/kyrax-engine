@@ -138,3 +138,23 @@ class ContextLogger:
     def snapshot(self) -> list:
         with self._lock:
             return [rec.copy() for ts, rec in self._store]
+
+    def get_all(self) -> Dict[str, Any]:
+        """
+        Return a flat dict of the most recent values for common context keys.
+        Useful for passing to planners/reasoners that expect a simple context dict.
+        
+        Returns dict with keys like: last_contact, last_app, last_device, last_file, etc.
+        """
+        with self._lock:
+            now = time.time()
+            result = {}
+            # Get most recent value for each key pattern
+            for ts, rec in reversed(self._store):
+                if (now - ts) > self.ttl:
+                    break
+                # Update result with any keys that aren't already set (most recent wins)
+                for key, value in rec.items():
+                    if key != "timestamp" and key not in result and value not in (None, "", []):
+                        result[key] = value
+            return result

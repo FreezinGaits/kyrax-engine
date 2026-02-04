@@ -512,8 +512,8 @@ class WhatsAppSkill(Skill):
     def _find_and_open_chat(self, contact_query: str, timeout: int = 20000) -> bool:
         """
         Uses WhatsApp Web search to find contact and open chat.
-        More robust clearing of the search box and NO 'press Enter' fallback.
         Returns True if exact contact opened, False otherwise.
+        This function is more robust: exact -> contains -> first-result fallback.
         """
         self._ensure_browser()
         page = self._page
@@ -527,7 +527,7 @@ class WhatsAppSkill(Skill):
             return False
 
         try:
-            # Robust clear: try fill(), else select-all + backspace, else DOM reset
+            # robust clear
             try:
                 search_input.fill("")   # preferred
             except Exception:
@@ -541,34 +541,64 @@ class WhatsAppSkill(Skill):
                     except Exception:
                         pass
 
-            # Focus + type
             search_input.click()
+            # type slowly so WA can show suggestions
             search_input.type(contact_query, delay=80)
-            time.sleep(1.5)  # wait results to populate
+            time.sleep(1.2)  # let results populate
 
-            # require exact span[title="..."] match — if not found, FAIL (do NOT open top result)
+            # 1) Exact title match (strict)
             contact_locator = page.locator(f'span[title="{contact_query}"]')
             try:
-                contact_locator.wait_for(state="visible", timeout=4000)
+                contact_locator.wait_for(state="visible", timeout=3000)
                 contact_locator.first.click()
-                # wait for message box ready
                 page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
                 return True
             except Exception:
-                # Not found => clean the search box to avoid leftover and return False
+                # not exact -> continue to fallback
+                pass
+
+            # 2) Case-insensitive contains() on title attribute (handles "Gautam Sharma (You)")
+            try:
+                # construct lowercase comparison using XPath translate()
+                low = contact_query.lower()
+                # use XPath: look for span whose title lowercased contains the query
+                contains_xpath = (
+                    f'//span[contains(translate(@title,"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"), "{low}")]'
+                )
+                contains_loc = page.locator(f'xpath={contains_xpath}')
+                if contains_loc.count() > 0:
+                    contains_loc.first.click()
+                    page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
+                    return True
+            except Exception:
+                pass
+
+            # 3) First-result fallback *only* if results list has visible options
+            try:
+                # common result item list container
+                results = page.locator('div[role="list"] div[role="option"], div[role="listbox"] div[role="option"]')
+                if results.count() == 1:
+                    results.first.click()
+                    page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
+                    return True
+            except Exception:
+                pass
+
+            # No match -> clear search box to avoid leftover text and return False
+            try:
+                search_input.click()
+                page.keyboard.press("Control+A")
+                page.keyboard.press("Backspace")
+            except Exception:
                 try:
-                    search_input.click()
-                    page.keyboard.press("Control+A")
-                    page.keyboard.press("Backspace")
+                    search_input.fill("")
                 except Exception:
-                    try:
-                        search_input.fill("")
-                    except Exception:
-                        pass
-                return False
+                    pass
+            return False
 
         except Exception:
             return False
+
 
     def _send_text(self, message: str) -> bool:
         """
@@ -665,15 +695,34 @@ class WhatsAppSkill(Skill):
         cinfo = self.contacts.get(contact) or next(
             (v for k, v in self.contacts.items() if k.lower() == str(contact).lower()), None
         )
+        contact_query = None
         if cinfo:
             contact_query = cinfo.get("whatsapp_name") or cinfo.get("name") or cinfo.get("phone") or contact
         else:
             s = str(contact).strip()
-            if re.sub(r'\D', '', s).isdigit() and len(re.sub(r'\D', '', s)) >= 7:
-                contact_query = s
+            # remove trailing parenthetical e.g., "Gautam Sharma (You)"
+            s_clean = re.sub(r'\s*\(.*\)$', '', s).strip()
+            # if looks like phone number
+            digits = re.sub(r'\D', '', s_clean)
+            if digits and len(digits) >= 7:
+                contact_query = digits
             else:
-                # if it looks like a phrase (e.g., "my friend X again"), keep as cleaned name
-                contact_query = re.sub(r'^(my\s+friend\s+|my\s+pal\s+)', '', s, flags=re.I).strip()
+                # Try fuzzy match against contacts keys (case-insensitive substring)
+                matches = []
+                qlow = s_clean.lower()
+                for k, v in self.contacts.items():
+                    if qlow == k.lower() or qlow in k.lower() or k.lower() in qlow:
+                        matches.append((k, v))
+                if len(matches) == 1:
+                    # exact one candidate -> auto use it
+                    k, v = matches[0]
+                    contact_query = v.get("whatsapp_name") or v.get("name") or v.get("phone") or k
+                elif len(matches) > 1:
+                    # ambiguous -> return failure so upper layer can prompt
+                    return SkillResult(False, "Ambiguous contact; multiple matches", {"candidates": [m[0] for m in matches]})
+                else:
+                    # fallback use cleaned phrase (let WA search do its best)
+                    contact_query = s_clean
 
         try:
             # If page/context died earlier, _ensure_browser will recreate

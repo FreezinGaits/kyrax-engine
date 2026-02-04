@@ -2,7 +2,8 @@
 from typing import Dict, Any, Optional
 import json
 import re
-
+import logging
+logger = logging.getLogger(__name__)
 from kyrax_core.llm.gemini_client import GeminiClient
 
 # small safe prompt template to ask Gemini to return strict JSON
@@ -39,7 +40,19 @@ User utterance:
 
 class LLMNLU:
     def __init__(self, gemini_client: Optional[GeminiClient] = None, model: str = "gemini-pro"):
-        self.client = gemini_client or GeminiClient(model=model)
+        # lazy import the Gemini client only when actually instantiating
+        if gemini_client is not None:
+            self.client = gemini_client
+        else:
+            try:
+                # local import so module import is cheap
+                from kyrax_core.llm.gemini_client import GeminiClient as _GeminiClient
+                self.client = _GeminiClient(model=model)
+            except Exception as e:
+                # fail-safe: leave client None and let caller handle LLM absence
+                logger.warning("Could not initialize GeminiClient in LLMNLU: %s", e)
+                self.client = None
+
 
     def analyze(self, text: str) -> Dict[str, Any]:
         prompt = _PROMPT_TEMPLATE.format(text=text)
