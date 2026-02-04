@@ -857,17 +857,17 @@ def main():
                 contacts = extract_multiple_contacts(raw, resolver)
 
                 # ---- 🔒 UNKNOWN CONTACT GATE (PUT IT HERE) ----
-                unknown = [
-                    c for c in contacts
-                    if not resolver.candidates(c, n=1, cutoff=0.4)
-                ]
+                # unknown = [
+                #     c for c in contacts
+                #     if not resolver.candidates(c, n=1, cutoff=0.4)
+                # ]
 
-                if unknown:
-                    print("🤖 I found some contacts I don't recognize:")
-                    for u in unknown:
-                        print(" -", u)
-                    print("Please add them to data/contacts.json or rephrase.")
-                    continue  # ⛔ STOP here — no execution
+                # if unknown:
+                #     print("🤖 I found some contacts I don't recognize:")
+                #     for u in unknown:
+                #         print(" -", u)
+                #     print("Please add them to data/contacts.json or rephrase.")
+                #     continue  # ⛔ STOP here — no execution
                 # ----------------------------------------------
 
                 # If multiple contacts → fan out

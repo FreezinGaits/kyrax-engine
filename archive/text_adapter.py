@@ -1,5 +1,5 @@
 # kyrax_core/adapters/text_adapter.py
-from .base import InputAdapter, AdapterOutput
+from kyrax_core.adapters.base import InputAdapter, AdapterOutput
 
 
 class CLITextAdapter(InputAdapter):

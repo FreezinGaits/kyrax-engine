@@ -1,359 +1,4 @@
 # skills/whatsapp_skill.py
-# from kyrax_core.skill_base import Skill, SkillResult
-# from kyrax_core.command import Command
-
-
-# class WhatsAppSkill(Skill):
-#     name = "whatsapp"
-
-#     def can_handle(self, command: Command) -> bool:
-#         # handle only application-level send_message to whatsapp
-#         if command.domain != "application":
-#             return False
-#         if command.intent.lower() not in ("send_message", "send_media", "send"):
-#             return False
-#         app = command.entities.get("app", "").lower()
-#         return app in ("whatsapp", "wa", "whatsapp_web")
-
-#     def execute(self, command: Command, context=None) -> SkillResult:
-#         contact = command.entities.get("contact")
-#         text = command.entities.get("text")
-#         media = command.entities.get("media")
-
-#         if not contact:
-#             return SkillResult(False, "Missing contact to send message to", {"missing": "contact"})
-
-#         # In this example we **simulate** sending. In real implementation call WhatsApp API/automation.
-#         payload = {
-#             "to": contact,
-#             "text": text,
-#             "media": media
-#         }
-
-#         # Replace this block with real API call or browser automation.
-#         simulated = {
-#             "status": "sent",
-#             "payload": payload
-#         }
-
-#         return SkillResult(True, f"Message queued for {contact}", data=simulated)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- # skills/whatsapp_skill.py
-# """
-# WhatsApp skill (Selenium) for KYRAX / Kyrax project.
-# - Keeps driver open by default to reuse QR-authenticated session.
-# - Optionally uses webdriver-manager to auto-download a matching chromedriver.
-# - Resolves contacts from data/contacts.json (simple registry).
-# """
-
-# import time
-# import json
-# import re
-# from typing import Dict, Any, Optional
-
-# from selenium import webdriver
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.chrome.options import Options
-# from selenium.webdriver.chrome.service import Service
-# from selenium.common.exceptions import TimeoutException, WebDriverException
-# from selenium.webdriver.support.ui import WebDriverWait
-# from selenium.webdriver.support import expected_conditions as EC
-
-# from webdriver_manager.chrome import ChromeDriverManager
-
-# # Import the skill contract from your kyrax_core package
-# try:
-#     from kyrax_core.command import Command
-#     from kyrax_core.skill_base import Skill, SkillResult
-# except Exception:
-#     # Fallbacks if running examples standalone (lightweight)
-#     from dataclasses import dataclass
-
-#     @dataclass
-#     class Command:
-#         intent: str
-#         domain: str
-#         entities: dict
-#         confidence: float = 1.0
-#         source: str = "voice"
-
-#     @dataclass
-#     class SkillResult:
-#         success: bool
-#         message: str
-#         data: Optional[Dict[str, Any]] = None
-
-#     class Skill:
-#         name = "whatsapp"
-#         def can_handle(self, command): return False
-#         def execute(self, command, context=None): return SkillResult(False, "Not implemented")
-
-
-# class WhatsAppSkill(Skill):
-#     name = "whatsapp"
-
-#     def __init__(
-#         self,
-#         profile_dir: Optional[str] = None,
-#         headless: bool = False,
-#         driver_path: Optional[str] = None,
-#         contacts_path: str = "data/contacts.json",
-#         close_on_finish: bool = False,
-#         use_webdriver_manager: bool = True,
-#     ):
-#         """
-#         profile_dir: chrome user-data dir to persist WhatsApp Web login (QR scan).
-#         headless: whether to run headless (QR scanning not possible in headless).
-#         driver_path: explicit chromedriver path (optional).
-#         close_on_finish: if True, quit driver after each execute() call.
-#         use_webdriver_manager: if True and driver_path is None, auto-download matching chromedriver.
-#         """
-#         self.profile_dir = profile_dir
-#         self.headless = headless
-#         self.driver_path = driver_path
-#         self.close_on_finish = close_on_finish
-#         self.use_webdriver_manager = use_webdriver_manager
-
-#         # load contacts registry (optional)
-#         self.contacts = {}
-#         try:
-#             with open(contacts_path, "r", encoding="utf-8") as f:
-#                 self.contacts = json.load(f)
-#         except FileNotFoundError:
-#             # leave empty and allow raw names/phones
-#             self.contacts = {}
-#         except Exception:
-#             self.contacts = {}
-
-#         self.driver = None
-
-#     def can_handle(self, command: Command) -> bool:
-#         if not hasattr(command, "intent"):
-#             return False
-#         return (
-#             command.domain == "application"
-#             and command.intent == "send_message"
-#             and ("text" in (command.entities or {}) or "message" in (command.entities or {}))
-#         )
-
-#     def _ensure_driver(self):
-#         if self.driver:
-#             return
-
-#         chrome_options = Options()
-#         if self.profile_dir:
-#             chrome_options.add_argument(f"--user-data-dir={self.profile_dir}")
-#         if self.headless:
-#             # headless prevents QR scanning; use only for automated servers with pre-authenticated session
-#             chrome_options.add_argument("--headless=new")
-#             chrome_options.add_argument("--disable-gpu")
-#         chrome_options.add_argument("--no-sandbox")
-#         chrome_options.add_argument("--disable-dev-shm-usage")
-#         chrome_options.add_argument("--disable-extensions")
-#         # avoid detection flags
-#         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-#         chrome_options.add_experimental_option("useAutomationExtension", False)
-
-#         try:
-#             if self.driver_path:
-#                 service = Service(self.driver_path)
-#             else:
-#                 if self.use_webdriver_manager:
-#                     driver_bin = ChromeDriverManager().install()
-#                     service = Service(driver_bin)
-#                 else:
-#                     service = None
-
-#             if service is not None:
-#                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
-#             else:
-#                 self.driver = webdriver.Chrome(options=chrome_options)
-
-#             self.driver.set_page_load_timeout(30)
-#             try:
-#                 self.driver.get("https://web.whatsapp.com")
-#             except Exception:
-#                 # ignore occasional timeout; page might still be usable
-#                 pass
-
-#         except WebDriverException as e:
-#             raise RuntimeError(f"Failed to start ChromeDriver: {e}")
-
-#     def _find_and_open_chat(self, contact_query: str, timeout: int = 20) -> bool:
-#         """
-#         Search and open chat for contact_query (name or phone). Returns True if chat opened.
-#         """
-#         self._ensure_driver()
-#         wait = WebDriverWait(self.driver, timeout)
-
-#         # A few different selectors as WhatsApp Web UI varies
-#         search_selectors = [
-#             "//div[@contenteditable='true' and @data-testid='chat-list-search']",
-#             "//div[@contenteditable='true'][@aria-label='Search input textbox']",
-#             "//div[@contenteditable='true'][@title='Search or start new chat']",
-#             "//div[@role='textbox'][@title='Search input textbox']",
-#             "//div[contains(@class,'_2_1wd copyable-text selectable-text')]"
-#         ]
-
-#         search_input = None
-#         for sel in search_selectors:
-#             try:
-#                 search_input = wait.until(EC.element_to_be_clickable((By.XPATH, sel)))
-#                 break
-#             except TimeoutException:
-#                 continue
-
-#         if not search_input:
-#             # last-resort: try to open search by pressing CTRL+F (less reliable)
-#             try:
-#                 return False
-#             except Exception:
-#                 return False
-
-#         try:
-#             search_input.click()
-#             # clear existing content (if any)
-#             try:
-#                 search_input.clear()
-#             except Exception:
-#                 pass
-#             search_input.send_keys(contact_query)
-#             # small sleep to let results populate
-#             time.sleep(1.0)
-
-#             # try to click exact match
-#             try:
-#                 el = wait.until(EC.element_to_be_clickable((By.XPATH, f"//span[@title=\"{contact_query}\"]")))
-#                 el.click()
-#                 return True
-#             except TimeoutException:
-#                 # fallback: press Enter to open first result
-#                 try:
-#                     search_input.send_keys("\n")
-#                     time.sleep(0.8)
-#                     return True
-#                 except Exception:
-#                     return False
-#         except Exception:
-#             return False
-
-#     def _send_text(self, message: str, timeout: int = 10) -> bool:
-#         wait = WebDriverWait(self.driver, timeout)
-#         msg_selectors = [
-#             "//div[@contenteditable='true' and @data-testid='conversation-compose-box-input']",
-#             "//div[@aria-label='Type a message']",
-#             "//footer//div[@contenteditable='true']",
-#             "//div[contains(@class,'_3uMse')]//div[@contenteditable='true']"
-#         ]
-#         msg_box = None
-#         for sel in msg_selectors:
-#             try:
-#                 msg_box = wait.until(EC.presence_of_element_located((By.XPATH, sel)))
-#                 break
-#             except TimeoutException:
-#                 continue
-#         if not msg_box:
-#             return False
-
-#         try:
-#             msg_box.click()
-#             # ensure focus
-#             time.sleep(0.05)
-#             msg_box.send_keys(message)
-#             msg_box.send_keys("\n")
-#             time.sleep(0.5)
-#             return True
-#         except Exception:
-#             return False
-
-#     def execute(self, command: Command, context: Optional[Dict[str, Any]] = None) -> SkillResult:
-#         """
-#         Execute send_message command. Returns SkillResult(success, message, data).
-#         """
-#         contact = (command.entities or {}).get("contact") or (command.entities or {}).get("to")
-#         # normalize message keys
-#         text = (command.entities or {}).get("text") or (command.entities or {}).get("message")
-
-#         if not text:
-#             return SkillResult(False, "No text provided")
-
-#         if not contact:
-#             return SkillResult(False, "No contact provided")
-
-#         # Resolve contact: check contacts registry, or use phone if numeric
-#         cinfo = self.contacts.get(contact) or next(
-#             (v for k, v in self.contacts.items() if k.lower() == str(contact).lower()), None
-#         )
-#         contact_query = None
-#         if cinfo:
-#             contact_query = cinfo.get("whatsapp_name") or cinfo.get("name") or cinfo.get("phone") or contact
-#         else:
-#             # if looks like phone number:
-#             s = str(contact).strip()
-#             if re.sub(r'\D', '', s).isdigit() and len(re.sub(r'\D', '', s)) >= 7:
-#                 contact_query = s
-#             else:
-#                 contact_query = contact
-
-#         try:
-#             opened = self._find_and_open_chat(contact_query)
-#             if not opened:
-#                 return SkillResult(False, f"Contact '{contact_query}' not found", {"contact_query": contact_query})
-
-#             sent = self._send_text(text)
-#             if not sent:
-#                 return SkillResult(False, "Failed to send message")
-
-#             return SkillResult(True, f"Message sent to {contact_query}", {"text": text, "contact_query": contact_query})
-#         except Exception as e:
-#             return SkillResult(False, f"Exception during send: {e}")
-#         finally:
-#             # only quit driver if user wanted ephemeral sessions
-#             if self.driver and self.close_on_finish:
-#                 try:
-#                     self.driver.quit()
-#                 except Exception:
-#                     pass
-#                 self.driver = None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# skills/whatsapp_skill.py
 """
 WhatsApp skill implemented with Playwright (sync API).
 Requires: pip install playwright
@@ -445,6 +90,76 @@ class WhatsAppSkill(Skill):
         self._page = None
         # Single-thread executor so all Playwright sync API runs in one thread (no asyncio loop there)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wa_playwright")
+    # ---------- UI state helpers ----------
+    def _ensure_home_view(self, timeout: int = 5000):
+        """
+        Ensure WA is in main chat list / search-ready state.
+        Safe to call before any search/send.
+        """
+        _, page = self._state()
+        if page is None:
+            return
+        try:
+            # try multiple back selectors (WhatsApp DOM varies)
+            back_selectors = [
+                "span[data-icon='back']",
+                "span[data-icon='back-refreshed']",
+                "button[aria-label='Back']",
+                "button[title='Back']"
+            ]
+            for sel in back_selectors:
+                try:
+                    back = page.locator(sel)
+                    if back.count() and back.is_visible():
+                        back.first.click()
+                        page.wait_for_timeout(250)
+                        break
+                except Exception:
+                    pass
+
+            # clear the search box safely
+            self._clear_search()
+        except Exception:
+            # non-fatal: best-effort
+            pass
+
+    def _clear_search(self):
+        """
+        Clear WhatsApp search input with multiple fallbacks.
+        """
+        _, page = self._state()
+        if page is None:
+            return
+        try:
+            # Preferred: explicit clear icon (ic-close / x-alt)
+            candidates = [
+                'span[data-icon="x-alt"]',
+                "button[aria-label='Clear search']",
+                "xpath=//svg[title()='ic-close']",
+                "xpath=//span[.//svg and contains(@class,'ic-close')]"  # fallback
+            ]
+            for sel in candidates:
+                try:
+                    el = page.locator(sel)
+                    if el.count() and el.is_visible():
+                        el.first.click()
+                        page.wait_for_timeout(120)
+                        return
+                except Exception:
+                    continue
+
+            # Last-resort: clear input with keyboard
+            try:
+                inp = page.locator('div[aria-label="Search input textbox"]')
+                if inp.count():
+                    inp.first.click()
+                    page.keyboard.press("Control+A")
+                    page.keyboard.press("Backspace")
+                    page.wait_for_timeout(120)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _state(self):
         """Return (context, page) from worker thread state or from self (main thread / legacy)."""
@@ -528,16 +243,37 @@ class WhatsAppSkill(Skill):
                 raise
 
         _, page = self._state()
+        # ensure page is on web.whatsapp.com and a search/scan UI is present
         try:
             if "web.whatsapp.com" not in (page.url or ""):
                 page.goto("https://web.whatsapp.com", timeout=60000)
-            page.wait_for_selector(
-                'div[aria-label="Search input textbox"], canvas[aria-label="Scan me!"]',
-                timeout=60000
-            )
-
+            try:
+                page.wait_for_selector('div[aria-label="Search input textbox"], canvas[aria-label="Scan me!"]', timeout=60000)
+            except Exception as e:
+                # If the page/context got closed while waiting, attempt one recovery: recreate browser context
+                # (helps when user manually closed the browser window)
+                try:
+                    # gently close stale context if possible
+                    if context:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                    # reset thread-local state -> force re-create on next call
+                    if ws is not None:
+                        ws.context = None
+                        ws.page = None
+                    else:
+                        self._context = None
+                        self._page = None
+                    # re-run initialization once
+                    return self._ensure_browser()
+                except Exception:
+                    # give up; caller should handle
+                    pass
         except PlaywrightTimeoutError:
             pass
+
 
     def _cleanup(self):
         """Clean up browser. If called from main thread, run cleanup in worker thread."""
@@ -655,6 +391,65 @@ class WhatsAppSkill(Skill):
 
         except Exception:
             return False
+    def resolve_contact_via_whatsapp_ui(self, name: str, wait_ms: int = 1200) -> list[str]:
+        """
+        Returns list of matching chat titles.
+        """
+        self._ensure_browser()
+        _, page = self._state()
+        if not page:
+            return []
+
+        self._ensure_home_view()
+
+        search_input = page.locator('div[aria-label="Search input textbox"]')
+        search_input.first.click()
+        search_input.first.type(name, delay=60)
+        page.wait_for_timeout(wait_ms)
+
+        titles = []
+        results = page.locator(
+            'div[role="list"] span[title]'
+        )
+        titles = []
+        for i in range(results.count()):
+            t = results.nth(i).get_attribute("title")
+            if not t:
+                continue
+
+            t = t.strip()
+
+            # ❌ ignore obvious non-contacts
+            if t.lower() in {
+                "message yourself",
+                "archived",
+            }:
+                continue
+
+            # ❌ ignore pure messages / emojis / very long junk
+            if len(t) > 40:
+                continue
+
+            titles.append(t)
+
+
+
+        self._clear_search()
+        return list(set(titles))
+
+    def save_contact(self, name: str, info: Optional[Dict[str,Any]] = None):
+        """
+        Add to in-memory contacts and persist to data/contacts.json.
+        User must confirm before calling this.
+        """
+        info = info or {"whatsapp_name": name, "source": "ui_discovered"}
+        self.contacts[name] = info
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open("data/contacts.json", "w", encoding="utf-8") as f:
+                json.dump(self.contacts, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 
     def _send_text(self, message: str) -> bool:
@@ -737,6 +532,19 @@ class WhatsAppSkill(Skill):
             return False
 
         return True
+    
+    # add this helper method to your WhatsAppSkill class (place it near other helpers)
+    def _resolve_contact_in_worker(self, name: str, wait_ms: int = 1200) -> list[str]:
+        """
+        Ensure worker thread-local Playwright state exists and then call the UI resolver.
+        This avoids calling resolve_contact_via_whatsapp_ui from a worker thread that
+        has no _worker_tls.state initialized.
+        """
+        # ensure worker thread-local state exists (the worker thread is the executor thread)
+        if _get_worker_state() is None:
+            _worker_tls.state = SimpleNamespace(pw=None, context=None, page=None)
+        # now call the actual resolver (it will use thread-local state / create browser as needed)
+        return self.resolve_contact_via_whatsapp_ui(name, wait_ms=wait_ms)
 
     def _cleanup_in_worker(self):
         """Run in worker thread to close browser/context held in thread-local state."""
@@ -749,35 +557,121 @@ class WhatsAppSkill(Skill):
             state.context = None
             state.page = None
 
-    def _do_send_in_thread(self, contact_query: str, text: str) -> SkillResult:
+    def _do_send_in_thread(self, contact_query: str, text: str, ui_resolved: bool = False) -> SkillResult:
         """
         Run Playwright (sync API) in this worker thread only.
-        Avoids "Sync API inside asyncio loop" when the main thread has an event loop.
+        Handles:
+        - browser/page accidentally closed
+        - UI state reset (archived / open chat / stale search)
+        - one safe retry if WhatsApp was closed
         """
+
+        # Ensure thread-local state exists
         if _get_worker_state() is None:
             _worker_tls.state = SimpleNamespace(pw=None, context=None, page=None)
+
         try:
-            opened = self._find_and_open_chat(contact_query)
+            # 1️⃣ Ensure browser + page exist (reopens WhatsApp if user closed it)
+            try:
+                self._ensure_browser()
+            except Exception as e:
+                return SkillResult(
+                    False,
+                    f"Failed to start WhatsApp Web: {e}"
+                )
+
+            # 2️⃣ Ensure we are in HOME view (not archived, not inside a chat)
+            try:
+                self._ensure_home_view()
+            except Exception:
+                # Non-fatal; continue best-effort
+                pass
+
+            # 3️⃣ Try to open chat (FIRST ATTEMPT)
+            if ui_resolved:
+                opened = True  # chat already resolved by UI
+            else:
+                opened = self._find_and_open_chat(contact_query)
+
+
+            # 4️⃣ If chat not opened, assume page/context was closed or stale → RECOVER ONCE
             if not opened:
-                return SkillResult(False, f"Contact '{contact_query}' not found", {"contact_query": contact_query})
+                try:
+                    # Hard reset: recreate browser context
+                    try:
+                        self._cleanup()
+                    except Exception:
+                        pass
+
+                    # Reopen WhatsApp Web
+                    self._ensure_browser()
+                    self._ensure_home_view()
+
+                    # Retry opening chat ONCE
+                    opened = self._find_and_open_chat(contact_query)
+
+                except Exception:
+                    opened = False
+
+            if not opened:
+                return SkillResult(
+                    False,
+                    f"Contact '{contact_query}' not found or WhatsApp not ready",
+                    {"contact_query": contact_query}
+                )
+
+            # 5️⃣ Send the message
             sent = self._send_text(text)
             if not sent:
-                return SkillResult(False, "Failed to send message (send action failed)")
-            return SkillResult(True, f"Message sent to {contact_query}", {"text": text, "contact_query": contact_query})
+                return SkillResult(
+                    False,
+                    "Failed to send message (send action failed)"
+                )
+
+            # Persist new contact AFTER successful send
+
+            # ✅ Save contact if:
+            # - message was sent
+            # - AND contact not already saved
+            if contact_query not in self.contacts:
+                self.save_contact(
+                    contact_query,
+                    {
+                        "name": contact_query,
+                        "whatsapp_name": contact_query,
+                        "source": "ui_auto_saved"
+                    }
+                )
+
+
+
+            return SkillResult(
+                True,
+                f"Message sent to {contact_query}",
+                {"text": text, "contact_query": contact_query}
+            )
+
+
         except Exception as e:
-            return SkillResult(False, f"Exception during send: {e}")
+            return SkillResult(
+                False,
+                f"Exception during send: {e}"
+            )
+
         finally:
+            # Optional cleanup if configured
             if self.close_on_finish:
                 try:
                     self._cleanup()
                 except Exception:
                     pass
 
+    
     # ---------------- public execute ----------------
     def execute(self, command: Command, context: Optional[Dict[str, Any]] = None) -> SkillResult:
         contact = (command.entities or {}).get("contact") or (command.entities or {}).get("to")
         text = (command.entities or {}).get("text") or (command.entities or {}).get("message")
-
+        ui_resolved = False
         if not text:
             return SkillResult(False, "No text provided")
         if not contact:
@@ -809,10 +703,41 @@ class WhatsAppSkill(Skill):
                     return SkillResult(False, "Ambiguous contact; multiple matches", {"candidates": [m[0] for m in matches]})
                 else:
                     contact_query = s_clean
+            
+            # if contact not canonicalized by contacts.json, try UI resolution (best-effort)
+            # 🔥 ALWAYS try UI resolution when name is not an exact saved key
+            # try:
+            #     # new: ensure thread-local initialized inside worker and call resolver there
+            #     ui_matches = self._executor.submit(
+            #         self._resolve_contact_in_worker, contact_query
+            #     ).result(timeout=12)
+
+
+            #     if not ui_matches:
+            #         return SkillResult(
+            #             False,
+            #             f"No WhatsApp contact found for '{contact_query}'."
+            #         )
+
+            #     if len(ui_matches) > 1:
+            #         return SkillResult(
+            #             False,
+            #             "Multiple contacts found with this name. Please specify the full name.",
+            #             {"candidates": ui_matches}
+            #         )
+
+            #     # ✅ EXACTLY ONE MATCH
+            #     contact_query = ui_matches[0]
+            #     ui_resolved = True
+
+            # except Exception:
+            #     pass
+
+
 
         # Run all Playwright sync API in a dedicated thread (no asyncio loop there)
         try:
-            future = self._executor.submit(self._do_send_in_thread, contact_query, text)
+            future = self._executor.submit(self._do_send_in_thread, contact_query, text, ui_resolved)
             return future.result(timeout=120)
         except Exception as e:
             if contact_query is None:
