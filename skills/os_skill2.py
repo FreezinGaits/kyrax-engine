@@ -6,9 +6,6 @@ from typing import Optional, Dict, Any
 from kyrax_core.skill_base import Skill, SkillResult
 from kyrax_core.command import Command
 import os
-from subprocess import CalledProcessError
-assert os.environ.get("PYTEST_CURRENT_TEST") is None, \
-    "OSSkill loaded during pytest — power actions are disabled"
 
 _FORCE_DRY_RUN = os.environ.get("KYRAX_FORCE_DRY_RUN", "0") == "1"
 
@@ -101,49 +98,13 @@ class OSSkill(Skill):
         if not action:
             return SkillResult(False, "No action specified", {"missing": "action"})
 
-        # Use local platform/subprocess so tests that monkeypatch os_skill.platform
-        # and os_skill.subprocess will be effective.
-        system = platform.system().lower()
-
-        # Linux: try a list of candidate commands and run them (even in dry-run we call subprocess.run
-        # so tests can monkeypatch it). If any candidate succeeds -> success, otherwise fail.
-        if system == "linux":
-            # candidate command lists (ordered preferred -> fallback)
-            if action in ("shutdown", "poweroff"):
-                cmd_candidates = [["systemctl", "poweroff"], ["shutdown", "-h", "now"]]
-            elif action == "restart":
-                cmd_candidates = [["systemctl", "reboot"], ["shutdown", "-r", "now"]]
-            elif action == "sleep":
-                cmd_candidates = [["systemctl", "suspend"]]
-            else:
-                return SkillResult(False, "unknown_action", {"action": action})
-
-            last_err = []
-            for cmd in cmd_candidates:
-                try:
-                    # call subprocess.run from this module so tests monkeypatch it
-                    # Note: we run the command even for dry-run so tests can assert failures.
-                    proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                    # If we reached here, candidate succeeded.
-                    msg = f"OK: {action}"
-                    if self.dry_run:
-                        msg += " (dry-run)"
-                    return SkillResult(True, msg, {"ok": True, "dry_run": self.dry_run, "action": action, "cmd": cmd, "stdout": getattr(proc, "stdout", "")})
-                except CalledProcessError as e:
-                    last_err.append((cmd, str(e)))
-                except FileNotFoundError as e:
-                    last_err.append((cmd, "not_found"))
-                except Exception as e:
-                    last_err.append((cmd, str(e)))
-
-            # all candidates failed
-            return SkillResult(False, "power_action_failed", {"ok": False, "error": "all_candidates_failed", "action": action, "details": last_err})
-
-        # Other platforms -> delegate to backend implementation (Windows/Mac)
+        # Always delegate to backend — even in dry-run
         backend = self._get_backend()
         res = backend.power_action(action=action, dry_run=self.dry_run)
-        return self._wrap_backend_result(res)
 
+
+        # Do NOT override backend result
+        return self._wrap_backend_result(res)
 
 
 

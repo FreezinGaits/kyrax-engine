@@ -12,6 +12,30 @@ class CommandValidationError(Exception):
     """Raised when a command cannot be built/validated."""
     pass
 
+# ------------ add near top, after imports ------------
+import re  # already present in file; ensure this remains
+
+def _parse_volume(raw_v):
+    """
+    Parse a volume value and return int 0..100.
+    Accepts forms like: 70, "70", "70%", "70 percent", "level 70".
+    Raises ValueError if it cannot parse a numeric volume.
+    """
+    if raw_v is None:
+        raise ValueError("volume missing")
+    s = str(raw_v).strip()
+    # find first integer 0-999 in the string
+    m = re.search(r'(\d{1,3})', s)
+    if not m:
+        raise ValueError(f"could not parse volume from: {raw_v!r}")
+    val = int(m.group(1))
+    if val < 0:
+        val = 0
+    if val > 100:
+        val = 100
+    return val
+# --------------------------------------------------
+
 
 class CommandBuilder:
     """
@@ -26,6 +50,13 @@ class CommandBuilder:
     DEFAULT_DOMAIN_MAP = {
         "send_message": "application",
         "open_app": "os",
+        "close_app": "os",
+        "set_volume": "os",
+        "mute": "os",
+        "unmute": "os",
+        "shutdown": "os",
+        "restart": "os",
+        "sleep": "os",
         "turn_on": "iot",
         "turn_off": "iot",
         "play_music": "application",
@@ -33,7 +64,7 @@ class CommandBuilder:
         "take_note": "file"
     }
 
-    # Intent schema: required, optional (with defaults), normalizer functions
+
     INTENT_SCHEMA = {
         "send_message": {
             "domain": "application",
@@ -46,6 +77,14 @@ class CommandBuilder:
             }
         },
         "open_app": {
+            "domain": "os",
+            "required": ["app"],
+            "optional": {},
+            "normalize": {
+                "app": lambda v: CommandBuilder.normalize_app(v)
+            }
+        },
+        "close_app": {
             "domain": "os",
             "required": ["app"],
             "optional": {},
@@ -95,8 +134,48 @@ class CommandBuilder:
             "normalize": {
                 "text": lambda v: v.strip() if isinstance(v, str) else v,
             }
-        }
+        },
+        # --- OS-specific intents ---
+        "set_volume": {
+            "domain": "os",
+            "required": ["level"],
+            "optional": {},
+            "normalize": {
+                "level": lambda v: int(str(v).replace("%", "").strip()) if v is not None else v
+            }
+        },
+        "mute": {
+            "domain": "os",
+            "required": [],
+            "optional": {},
+            "normalize": {}
+        },
+        "unmute": {
+            "domain": "os",
+            "required": [],
+            "optional": {},
+            "normalize": {}
+        },
+        "shutdown": {
+            "domain": "os",
+            "required": [],
+            "optional": {},
+            "normalize": {}
+        },
+        "restart": {
+            "domain": "os",
+            "required": [],
+            "optional": {},
+            "normalize": {}
+        },
+        "sleep": {
+            "domain": "os",
+            "required": [],
+            "optional": {},
+            "normalize": {}
+        },
     }
+
 
     APP_SYNONYMS = {
         "whatsapp": {"whatsapp", "whattsapp", "whats app", "wa"},
@@ -203,6 +282,23 @@ class CommandBuilder:
                 built_entities[ent_key] = normalizer(raw_val) if raw_val is not None else built_entities.get(ent_key)
             except Exception as e:
                 issues.append(f"normalization_failed:{ent_key}:{e}")
+        # ---------- new: treat normalization failures for required keys as missing ----------
+        # If normalization failed for a required field, convert it to a missing_required_entity issue
+        norm_failed_required = []
+        for iss in issues:
+            if iss.startswith("normalization_failed:"):
+                # pattern: "normalization_failed:<ent_key>:<exception>"
+                parts = iss.split(":", 2)
+                if len(parts) >= 2:
+                    ent_key = parts[1]
+                    if ent_key in (schema.get("required", []) or []):
+                        norm_failed_required.append(ent_key)
+        if norm_failed_required:
+            for k in norm_failed_required:
+                issues.append(f"missing_required_entity:{k}")
+            # Return None so caller knows validation failed for required normalized entity
+            return None, issues
+        # -------------------------------------------------------------------------------
 
         # --- contact sanity check & ambiguity detection ---
         contact = built_entities.get("contact")

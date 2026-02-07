@@ -195,40 +195,157 @@ class AIReasoner:
         gt = goal_text.lower().strip()
         proposals: List[PlanProposal] = []
 
-        # Example: prepare presentation -> open ppt app, open file, do DND, set volume
+        # -------------------------------------------------
+        # 1️⃣ Presentation / meeting preparation
+        # -------------------------------------------------
         if "presentation" in gt or "present" in gt or "powerpoint" in gt:
             pc = [
-                ProposedCommand(intent="open_app", entities={"app": "powerpoint"}, domain="os", confidence=0.9, note="Open PowerPoint"),
-                ProposedCommand(intent="open_file", entities={"path": context.get("last_presentation_path", "presentation.pptx")}, domain="file", confidence=0.85, note="Open the last used presentation file"),
-                ProposedCommand(intent="set_do_not_disturb", entities={"state": "on"}, domain="os", confidence=0.8, note="Enable Do Not Disturb"),
-                ProposedCommand(intent="set_volume", entities={"level": 70}, domain="os", confidence=0.8, note="Set system volume to 70")
+                ProposedCommand(
+                    intent="open_app",
+                    entities={"app": context.get("presentation_app", "powerpoint")},
+                    domain="os",
+                    confidence=0.9,
+                    note="Open presentation app"
+                ),
+                ProposedCommand(
+                    intent="open_file",
+                    entities={"path": context.get("last_presentation_path", "presentation.pptx")},
+                    domain="file",
+                    confidence=0.85,
+                    note="Open the last used presentation file"
+                ),
+                ProposedCommand(
+                    intent="set_do_not_disturb",
+                    entities={"state": "on"},
+                    domain="os",
+                    confidence=0.8,
+                    note="Enable Do Not Disturb"
+                ),
+                ProposedCommand(
+                    intent="set_volume",
+                    entities={"level": 70},
+                    domain="os",
+                    confidence=0.8,
+                    note="Set system volume to 70"
+                )
             ]
-            proposals.append(PlanProposal(plan_id=str(uuid.uuid4()), proposed_commands=pc, explanation="Deterministic plan for presentation prep", score=0.85))
+            proposals.append(
+                PlanProposal(
+                    plan_id=str(uuid.uuid4()),
+                    proposed_commands=pc,
+                    explanation="Deterministic plan for presentation prep",
+                    score=0.85
+                )
+            )
 
-        # Example: send report like last time -> download + send
+        # -------------------------------------------------
+        # 2️⃣ Explicit power actions (shutdown / restart / sleep)
+        # -------------------------------------------------
+        if any(k in gt for k in ("shutdown", "power off", "poweroff", "restart", "reboot", "sleep")):
+            action = None
+
+            if "shutdown" in gt or "power off" in gt or "poweroff" in gt:
+                action = "shutdown"
+            elif "restart" in gt or "reboot" in gt:
+                action = "restart"
+            elif "sleep" in gt:
+                action = "sleep"
+
+            if action:
+                pc = [
+                    ProposedCommand(
+                        intent=action,
+                        entities={},
+                        domain="os",
+                        confidence=0.6,
+                        note=f"Request to {action}; confirmation required"
+                    )
+                ]
+                proposals.append(
+                    PlanProposal(
+                        plan_id=str(uuid.uuid4()),
+                        proposed_commands=pc,
+                        explanation=f"Request to {action} (confirmation recommended)",
+                        score=0.6
+                    )
+                )
+
+        # -------------------------------------------------
+        # 3️⃣ Send report workflow
+        # -------------------------------------------------
         if "send the report" in gt or "send report" in gt or ("report" in gt and "send" in gt):
             last_contact = context.get("last_contact", None)
             pc1 = [
-                ProposedCommand(intent="download_file", entities={"url": context.get("last_report_url", "https://example.com/report.pdf")}, domain="web", confidence=0.75, note="Download last report"),
-                ProposedCommand(intent="send_message", entities={"contact": last_contact or "unknown", "text": "Here is the report"}, domain="application", confidence=0.7, note="Send report to last contact")
+                ProposedCommand(
+                    intent="download_file",
+                    entities={"url": context.get("last_report_url", "https://example.com/report.pdf")},
+                    domain="web",
+                    confidence=0.75,
+                    note="Download last report"
+                ),
+                ProposedCommand(
+                    intent="send_message",
+                    entities={"contact": last_contact or "unknown", "text": "Here is the report"},
+                    domain="application",
+                    confidence=0.7,
+                    note="Send report to last contact"
+                )
             ]
-            proposals.append(PlanProposal(plan_id=str(uuid.uuid4()), proposed_commands=pc1, explanation="Download last report and send it", score=0.7))
+            proposals.append(
+                PlanProposal(
+                    plan_id=str(uuid.uuid4()),
+                    proposed_commands=pc1,
+                    explanation="Download last report and send it",
+                    score=0.7
+                )
+            )
 
-        # Generic fallback: try open app or do simple action by parsing verbs
+        # -------------------------------------------------
+        # 4️⃣ Generic fallback (ONLY if nothing matched)
+        # -------------------------------------------------
         if not proposals:
-            # primitive parsing: "open X" or "turn on Y"
             if gt.startswith("open "):
                 app = gt.replace("open ", "").strip()
-                pc = [ProposedCommand(intent="open_app", entities={"app": app}, domain="os", confidence=0.6, note="Open app")]
-                proposals.append(PlanProposal(plan_id=str(uuid.uuid4()), proposed_commands=pc, explanation=f"Open {app}", score=0.6))
+                pc = [
+                    ProposedCommand(
+                        intent="open_app",
+                        entities={"app": app},
+                        domain="os",
+                        confidence=0.6,
+                        note="Open app"
+                    )
+                ]
+                proposals.append(
+                    PlanProposal(
+                        plan_id=str(uuid.uuid4()),
+                        proposed_commands=pc,
+                        explanation=f"Open {app}",
+                        score=0.6
+                    )
+                )
             else:
-                # fallback single-step: ask user to clarify (represented by a plan with a clarifying action)
-                pc = [ProposedCommand(intent="ask_clarify", entities={"question": f"I am not sure how to do: {goal_text}. Can you clarify?"}, domain="system", confidence=0.5, note="Clarify goal with user")]
-                proposals.append(PlanProposal(plan_id=str(uuid.uuid4()), proposed_commands=pc, explanation="Clarify goal", score=0.5))
+                pc = [
+                    ProposedCommand(
+                        intent="ask_clarify",
+                        entities={"question": f"I am not sure how to do: {goal_text}. Can you clarify?"},
+                        domain="system",
+                        confidence=0.5,
+                        note="Clarify goal with user"
+                    )
+                ]
+                proposals.append(
+                    PlanProposal(
+                        plan_id=str(uuid.uuid4()),
+                        proposed_commands=pc,
+                        explanation="Clarify goal",
+                        score=0.5
+                    )
+                )
 
         # rank and return top-n
         proposals_sorted = sorted(proposals, key=lambda x: x.score, reverse=True)
         return proposals_sorted[:n]
+
 
     # -------------------------
     # LLM-backed planner (adapter)

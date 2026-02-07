@@ -39,6 +39,14 @@ from typing import List
 # from kyrax_core.llm_adapters import get_llm_callable, gemini_llm_callable
 # from kyrax_core.llm.gemini_client import GeminiClient  # Still needed for LLMNLU
 # from kyrax_core.nlu.llm_nlu import LLMNLU
+# after LLM env detection prints in examples/run_pipeline.py
+from kyrax_core.os_policy import dry_run_enabled, ALLOWED_OS_INTENTS, HIGH_RISK_INTENTS
+
+print("KYRAX OS policy:")
+print("  KYRAX_OS_DRY_RUN =", dry_run_enabled())
+print("  allowed_os_intents =", ALLOWED_OS_INTENTS)
+print("  high_risk_intents =", HIGH_RISK_INTENTS)
+
 from kyrax_core.intent_mapper import map_nlu_to_command
 from kyrax_core.command_builder import CommandBuilder
 from kyrax_core.context_logger import ContextLogger
@@ -55,6 +63,9 @@ from kyrax_core.contact_resolver import ContactResolver
 from skills.whatsapp_skill import WhatsAppSkill
 from skills.os_skill import OSSkill
 from skills.iot_skill import IoTSkill
+from kyrax_core.guards import GuardManager  # Ensure GuardManager is imported
+from kyrax_core.dispatcher import Dispatcher
+from kyrax_core.command import Command
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("run_pipeline")
@@ -488,7 +499,56 @@ def main():
     registry.register(iot_skill)
     print("✓ IoT skill registered (simulated mode)")
 
-    dispatcher = Dispatcher(registry=registry)
+    # # Dispatcher (NO guard logic inside; GuardManager is used externally)
+    # dispatcher = Dispatcher(registry=registry)
+
+
+    def _cli_confirm(prompt: str) -> bool:
+        # simple CLI confirm used by Dispatcher when require_confirmation is needed
+        print(prompt)
+        ans = input("Type 'yes' to confirm: ").strip().lower()
+        return ans in ("y", "yes")
+
+
+    dispatcher = Dispatcher(registry=registry, guard_manager=GuardManager(), default_user={"id":"local", "roles": []}, default_confirm_fn=_cli_confirm)
+    # ---- Phase 4: Guard manager wiring ----
+    # Instantiate guard manager. We pass a simple checker (always true) but you can
+    # provide a validator that inspects registry or user roles.
+    # Phase 5: role-based permissions
+    # default role: read from env KYRAX_DEFAULT_ROLE, or 'user'
+    default_role = os.environ.get("KYRAX_DEFAULT_ROLE", "user").strip().lower()
+    user = {"id": "local_user", "roles": [default_role]}
+
+    # Map intents -> required roles (you can extend this map)
+    # intent_roles_map = {}
+    # # Use HIGH_RISK_INTENTS as admin-only by default
+    # try:
+    #     # HIGH_RISK_INTENTS imported earlier from kyrax_core.os_policy
+    #     for it in (HIGH_RISK_INTENTS or []):
+    #         intent_roles_map[it] = ("admin",)
+    # except Exception:
+    #     pass
+
+    # guard_manager = GuardManager(skill_registry_checker=lambda cmd: True, intent_roles_map=intent_roles_map)
+    guard_manager = GuardManager(
+        skill_registry_checker=lambda cmd: True
+    )
+
+
+    # Minimal "user" context used by GuardManager; extend as needed.
+    # user = {"id": "local_user", "roles": ["user"]}
+
+    # CLI confirm function used to ask the human (works in interactive CLI).
+    def cli_confirm_fn(prompt: str) -> bool:
+        # Non-interactive environments (CI/tests) will gracefully return False
+        try:
+            ans = input(prompt + " [y/N]: ").strip().lower()
+            return ans in ("y", "yes")
+        except Exception:
+            # e.g. input() not available (tests/CI), default to deny
+            return False
+
+
     print("=" * 60)
     print("KYRAX CLI ready. Type 'exit' to quit.")
     print("Examples:")
@@ -509,6 +569,22 @@ def main():
                 break
             if not raw:
                 continue
+            # developer / test convenience: role switching
+            if raw.lower().startswith("become "):
+                # commands: "become admin" or "become user" or "become role <role>"
+                parts = raw.split()
+                if len(parts) >= 2:
+                    new_role = parts[1].lower()
+                    user["roles"] = [new_role]
+                    print(f"Switched current role to: {new_role}")
+                else:
+                    print("Usage: become <role> (e.g. become admin)")
+                continue
+
+            if raw.lower().startswith("show role"):
+                print("Current role(s):", user.get("roles"))
+                continue
+
             if raw.lower() in ("exit", "quit"):
                 break
 
@@ -591,10 +667,23 @@ def main():
                         print(f"Detected {len(validated_cmds)} send-message task(s) (local parser). Executing sequentially.")
                         for cmd in validated_cmds:
                             print("Executing:", cmd)
-                            res = dispatcher.execute(cmd)
-                            print("Result:", res)
-                            if res.success:
-                                ctx_logger.update_from_command(cmd)
+
+                            guard_res = guard_manager.guard_and_dispatch(
+                                cmd,
+                                user,
+                                dispatcher_callable=lambda c: dispatcher.execute(c),
+                                confirm_fn=cli_confirm_fn
+                            )
+
+                            if guard_res.get("status") == "executed":
+                                res = guard_res["result"]
+                                print("Result:", res)
+                                if getattr(res, "success", False):
+                                    ctx_logger.update_from_command(cmd)
+                            else:
+                                # guard blocked or required confirmation but user said no
+                                print("Guard result:", guard_res)
+
 
                         regex_consumed = True
                         continue
@@ -671,19 +760,39 @@ def main():
                         # Use chain_executor for multi-step execution with placeholder resolution
                         if len(commands_to_execute) > 1:
                             print(f"\n📋 Executing {len(commands_to_execute)} steps sequentially...")
-                            results, chain_issues = chain_executor.execute_chain(
-                                commands_to_execute, 
-                                dispatcher, 
-                                stop_on_error=False
-                            )
-                            
-                            # Report results
-                            for idx, (result, cmd) in enumerate(zip(results, commands_to_execute), start=1):
-                                if result.get("success", False):
-                                    print(f" ✓ Step {idx} completed: {result.get('message', 'OK')}")
-                                    ctx_logger.update_from_command(cmd)
+                            # Execute each step guarded individually (so destructive OS intents are confirmed)
+                            results = []
+                            chain_issues = []
+
+                            for idx, cmd in enumerate(commands_to_execute, start=1):
+                                print(f"Executing step {idx}: {cmd}")
+
+                                guard_res = guard_manager.guard_and_dispatch(
+                                    cmd,
+                                    user,
+                                    dispatcher_callable=lambda c: dispatcher.execute(c),
+                                    confirm_fn=cli_confirm_fn
+                                )
+
+                                if guard_res.get("status") == "executed":
+                                    res = guard_res["result"]
+                                    results.append(res)
+                                    if getattr(res, "success", False):
+                                        print(f" ✓ Step {idx} completed: {res.get('message', 'OK')}")
+                                        try:
+                                            ctx_logger.update_from_command(cmd)
+                                        except Exception:
+                                            pass
+                                    else:
+                                        print(f" ✗ Step {idx} failed: {getattr(res,'message', 'Unknown error')}")
+                                        chain_issues.append({"step": idx, "cmd": cmd, "result": res})
+                                        # continue to next step (non-fatal, keep going)
                                 else:
-                                    print(f" ✗ Step {idx} failed: {result.get('message', 'Unknown error')}")
+                                    # Guard blocked or confirmation denied
+                                    print(f" ⚠️ Step {idx} skipped by guard: {guard_res}")
+                                    chain_issues.append({"step": idx, "cmd": cmd, "guard": guard_res})
+                                    results.append(None)
+
                             
                             if chain_issues:
                                 print(f" ⚠️  Chain execution issues: {len(chain_issues)}")
@@ -843,10 +952,21 @@ def main():
                             print("Skipped due to issues:", issues)
                             continue
 
-                        res = dispatcher.execute(cmd)
-                        print("Result:", res)
-                        if res.success:
-                            ctx_logger.update_from_command(cmd)
+                        guard_res = guard_manager.guard_and_dispatch(
+                            cmd,
+                            user,
+                            dispatcher_callable=lambda c: dispatcher.execute(c),
+                            confirm_fn=cli_confirm_fn
+                        )
+
+                        if guard_res.get("status") == "executed":
+                            res = guard_res["result"]
+                            print("Result:", res)
+                            if getattr(res, "success", False):
+                                ctx_logger.update_from_command(cmd)
+                        else:
+                            print("Guard result:", guard_res)
+
 
                     continue  # IMPORTANT: stop normal single-command flow
 
@@ -897,11 +1017,21 @@ def main():
                             print(f"⚠️ Skipping {contact}: {issues}")
                             continue
 
-                        res = dispatcher.execute(cmd)
-                        print("Result:", res)
+                        guard_res = guard_manager.guard_and_dispatch(
+                            cmd,
+                            user,
+                            dispatcher_callable=lambda c: dispatcher.execute(c),
+                            confirm_fn=cli_confirm_fn
+                        )
 
-                        if res.success:
-                            ctx_logger.update_from_command(cmd)
+                        if guard_res.get("status") == "executed":
+                            res = guard_res["result"]
+                            print("Result:", res)
+                            if getattr(res, "success", False):
+                                ctx_logger.update_from_command(cmd)
+                        else:
+                            print("Guard result:", guard_res)
+
 
                     continue  # 🔴 CRITICAL: prevents falling into single-command path
 
@@ -1039,20 +1169,41 @@ def main():
             print("Command:", cmd_validated)
 
             # Execute the command through dispatcher
+            # ---- Guarded execution (OS safety) ----
+            # user = {
+            #     "id": "local_user",
+            #     "roles": ["user"],  # change to ["admin"] to allow power actions without block
+            # }
+
             try:
-                result = dispatcher.execute(cmd_validated)
+                guard_result = guard_manager.guard_and_dispatch(
+                    cmd_validated,
+                    user=user,
+                    dispatcher_callable=lambda c: dispatcher.execute(c),
+                    confirm_fn=cli_confirm_fn
+                )
             except Exception as e:
-                print("Dispatch error:", e)
+                print("Guard/Dispatch error:", e)
                 continue
 
-            print("Result:", result)
+            if guard_result.get("status") == "blocked":
+                print("⛔ Action blocked:", guard_result.get("reason"))
+                continue
 
-            # Update context logger if success
-            if result and getattr(result, "success", False):
-                try:
-                    ctx_logger.update_from_command(cmd_validated)
-                except Exception:
-                    pass
+            if guard_result.get("status") == "cancelled":
+                print("❌ Action cancelled by user.")
+                continue
+
+            if guard_result.get("status") == "executed":
+                result = guard_result.get("result")
+                print("Result:", result)
+
+                if result and getattr(result, "success", False):
+                    try:
+                        ctx_logger.update_from_command(cmd_validated)
+                    except Exception:
+                        pass
+
                 
                 # Persist workflow if store is available (single command = single-step workflow)
                 if workflow_store:

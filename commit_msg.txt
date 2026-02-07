@@ -1,0 +1,32 @@
+This commit introduces full OS automation support in KYRAX with a safe, testable,
+and policy-driven design, implemented incrementally across multiple phases.
+
+Key highlights:
+
+Phase 1–2:
+- Added OS domain intents (open_app, close_app, set_volume, mute, unmute)
+- Introduced OSSkill with platform-aware backends
+- Default dry-run mode to prevent destructive execution
+
+Phase 3:
+- Integrated GuardManager for centralized safety enforcement
+- Added confirmation flow for destructive actions
+- Unified dispatcher → guard → skill execution pipeline
+
+Phase 4:
+- Introduced OS policy layer (os_policy.py)
+- Defined allowed OS intents and high-risk intents
+- Centralized dry-run detection via environment configuration
+
+Phase 5:
+- Implemented role-based access control for OS actions
+- Enforced admin-only execution for high-risk OS intents
+- Ensured deterministic, test-safe behavior across platforms
+
+Overall:
+- OS automation is now safe-by-default
+- Destructive actions are guarded, confirmable, and role-aware
+- Runtime behavior and test behavior are aligned
+- Architecture cleanly separates policy, guards, and execution
+
+This lays a stable foundation for future Phase-6 extensions without compromising system safety.

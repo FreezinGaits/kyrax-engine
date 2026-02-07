@@ -1,0 +1,7 @@
+(kyrax-engine) PS D:\Code Playground\kyrax-engine> python -c "from kyrax_core.os_policy import ALLOWED_OS_INTENTS, HIGH_RISK_INTENTS, dry_run_enabled; print(ALLOWED_OS_INTENTS, HIGH_RISK_INTENTS, dry_run_enabled())"
+['open_app', 'close_app', 'set_volume', 'mute', 'unmute'] ['shutdown', 'restart', 'sleep'] True
+(kyrax-engine) PS D:\Code Playground\kyrax-engine> python -c "import kyrax_core.guards; print('guards ok')"
+guards ok
+(kyrax-engine) PS D:\Code Playground\kyrax-engine> 
+
+

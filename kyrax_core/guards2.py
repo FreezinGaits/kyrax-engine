@@ -177,23 +177,25 @@ class GuardManager:
                     return GuardResult(allowed=False, blocked=True, require_confirmation=False, reason="os_intent_not_allowed", actions=["blocked_os_intent"])
 
             # If dry-run mode enabled, block high-risk intents outright
-            # 🔒 DRY-RUN POLICY (STRICT):
-            # In dry-run mode, ALL high-risk OS intents are BLOCKED at validation time,
-            # even for admin. Runtime override is NOT allowed here.
-            if (
-                dry_run_enabled()
-                and HIGH_RISK_INTENTS is not None
-                and intent in {i.lower() for i in HIGH_RISK_INTENTS}
-            ):
+            if dry_run_enabled() and HIGH_RISK_INTENTS is not None and intent in {i.lower() for i in HIGH_RISK_INTENTS}:
+                # Non-admins are blocked
+                if "admin" not in user_roles:
+                    return GuardResult(
+                        allowed=False,
+                        blocked=True,
+                        require_confirmation=False,
+                        reason="dry_run_blocked_non_admin",
+                        actions=["blocked_dry_run"]
+                    )
+
+                # Admins are allowed but must confirm
                 return GuardResult(
                     allowed=False,
-                    blocked=True,
-                    require_confirmation=False,
-                    reason="dry_run_blocked",
-                    actions=["blocked_dry_run"],
+                    blocked=False,
+                    require_confirmation=True,
+                    reason="dry_run_high_risk_confirm",
+                    actions=["confirm_destructive"]
                 )
-
-
 
 
             # If this is a high-risk OS intent, require explicit confirmation and admin role
