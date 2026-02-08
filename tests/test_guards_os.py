@@ -9,14 +9,21 @@ from kyrax_core.skill_registry import SkillRegistry
 import kyrax_core.os_policy as os_policy
 
 def test_guard_blocks_high_risk_in_dry_run(monkeypatch):
-    # Ensure dry_run is True for this test
     monkeypatch.setattr(os_policy, "dry_run_enabled", lambda: True)
     g = GuardManager()
 
     cmd = Command(intent="shutdown", domain="os", entities={})
-    result = g.validate(cmd, {"id": "u1", "roles": ["admin"]})
-    assert result.blocked is True
-    assert result.reason == "dry_run_blocked" or "dry_run" in (result.reason or "")
+
+    # non-admin → blocked
+    res_user = g.validate(cmd, {"id": "u1", "roles": ["user"]})
+    assert res_user.blocked is True
+
+    # admin → confirmation required (NOT blocked)
+    res_admin = g.validate(cmd, {"id": "admin", "roles": ["admin"]})
+    assert res_admin.blocked is False
+    assert res_admin.require_confirmation is True
+    assert "dry_run" in (res_admin.reason or "")
+
 
 def test_guard_requires_confirmation_for_high_risk_when_admin(monkeypatch):
     # dry_run disabled so confirmation path activates

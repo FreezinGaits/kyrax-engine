@@ -15,11 +15,22 @@ class FakeProc:
         self.returncode = returncode
 
 def test_set_volume_dry_run():
+    from skills.os_skill import OSSkill
+    from kyrax_core.command import Command
+
     s = OSSkill(dry_run=True)
-    cmd = Command(intent="set_volume", domain="os", entities={"level": 30})
+    cmd = Command(
+        intent="set_volume",
+        domain="os",
+        entities={"level": 30}
+    )
+
     res = s.execute(cmd)
+
     assert res.success is True
-    assert "dry-run" in (res.message or "").lower() or res.data.get("cmd")
+    assert "dry" in res.message.lower()
+    assert res.data["level"] == 30
+
 
 def test_shutdown_dry_run():
     s = OSSkill(dry_run=True)

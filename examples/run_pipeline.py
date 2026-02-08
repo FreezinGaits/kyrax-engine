@@ -454,8 +454,18 @@ def main():
 
     builder = CommandBuilder()
     ctx_logger = ContextLogger(max_entries=200, ttl_seconds=3600)
+    # Map high risk intents -> admin role by default
+    intent_roles_map = {}
+    for it in (HIGH_RISK_INTENTS or []):
+        intent_roles_map[it] = ("admin",)
     registry = SkillRegistry()
+    def skill_checker(cmd):
+        try:
+            return registry.find_handler(cmd) is not None
+        except Exception:
+            return False
 
+    guard_manager = GuardManager(skill_registry_checker=skill_checker, intent_roles_map=intent_roles_map)
     # Contact resolver
     resolver = ContactResolver("data/contacts.json")
 
@@ -510,7 +520,7 @@ def main():
         return ans in ("y", "yes")
 
 
-    dispatcher = Dispatcher(registry=registry, guard_manager=GuardManager(), default_user={"id":"local", "roles": []}, default_confirm_fn=_cli_confirm)
+    dispatcher = Dispatcher(registry=registry)
     # ---- Phase 4: Guard manager wiring ----
     # Instantiate guard manager. We pass a simple checker (always true) but you can
     # provide a validator that inspects registry or user roles.
@@ -530,9 +540,9 @@ def main():
     #     pass
 
     # guard_manager = GuardManager(skill_registry_checker=lambda cmd: True, intent_roles_map=intent_roles_map)
-    guard_manager = GuardManager(
-        skill_registry_checker=lambda cmd: True
-    )
+    # guard_manager = GuardManager(
+    #     skill_registry_checker=lambda cmd: True
+    # )
 
 
     # Minimal "user" context used by GuardManager; extend as needed.
@@ -587,6 +597,42 @@ def main():
 
             if raw.lower() in ("exit", "quit"):
                 break
+            # ---------- OS quick deterministic gate (SAFE) ----------
+            os_simple_patterns = [
+                (r"set volume to (\d+)", "set_volume"),
+                (r"volume (\d+)", "set_volume"),
+                (r"mute volume", "mute"),
+                (r"unmute volume", "unmute"),
+            ]
+
+            matched = False
+            for pat, intent in os_simple_patterns:
+                m = re.search(pat, raw.lower())
+                if m:
+                    entities = {}
+                    if intent == "set_volume":
+                        entities["level"] = int(m.group(1))
+
+                    cmd = Command(
+                        intent=intent,
+                        domain="os",
+                        entities=entities
+                    )
+
+                    guard_res = guard_manager.guard_and_dispatch(
+                        cmd,
+                        user,
+                        dispatcher_callable=lambda c: dispatcher.execute(c),
+                        confirm_fn=cli_confirm_fn
+                    )
+
+                    print("Result:", guard_res)
+                    matched = True
+                    break
+
+            if matched:
+                continue
+            # ------------------------------------------------------
 
             # ---- deterministic multi-send handler (MUST RUN FIRST) ----
             multi_cmds = extract_send_commands(raw)

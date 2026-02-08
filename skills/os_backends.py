@@ -1,31 +1,29 @@
 # skills/os_backends.py
 from __future__ import annotations
-from typing import Dict, Any, Optional, Protocol
+from typing import Dict, Any
 import platform
 import shutil
 import subprocess
-import os
-import sys
 import logging
+
+# Import CalledProcessError locally so catching it doesn't depend on monkeypatched subprocess module
+from subprocess import CalledProcessError as _CalledProcessError
 
 log = logging.getLogger(__name__)
 
-class OSBackend(Protocol):
-    """
-    Backend interface for platform-specific OS operations.
-    Implementations must be side-effect safe and should respect dry_run
-    at the OSSkill layer (but can accept dry_run param as convenience).
-    """
-    def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]: ...
-    def mute(self, mute: bool, dry_run: bool = True) -> Dict[str, Any]: ...
-    def open_app(self, app: str, dry_run: bool = True) -> Dict[str, Any]: ...
-    def power_action(self, action: str, dry_run: bool = True) -> Dict[str, Any]: ...
+class OSBackend:
+    def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]:
+        raise NotImplementedError
+    def mute(self, mute: bool, dry_run: bool = True) -> Dict[str, Any]:
+        raise NotImplementedError
+    def open_app(self, app: str, dry_run: bool = True) -> Dict[str, Any]:
+        raise NotImplementedError
+    def power_action(self, action: str, dry_run: bool = True) -> Dict[str, Any]:
+        raise NotImplementedError
 
-# ---------------- Windows backend (uses pycaw for volume) ----------------
-class WindowsBackend:
+class WindowsBackend(OSBackend):
     def __init__(self):
         self.platform = "Windows"
-        # lazy import pycaw; allow fallback when not installed
         try:
             from ctypes import POINTER, cast
             from comtypes import CLSCTX_ALL
@@ -40,24 +38,17 @@ class WindowsBackend:
             log.info("pycaw not available: %s", e)
             self.available = False
 
-    def _get_volume_interface(self):
-        # can raise if pycaw not installed
-        dev = self._AudioUtilities.GetSpeakers()
-        interface = dev.Activate(self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None)
-        volume = self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
-        return volume
-
     def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]:
         level = max(0, min(100, int(level)))
         if dry_run:
             return {"ok": True, "dry_run": True, "action": "set_volume", "level": level}
         if not self.available:
-            return {"ok": False, "error": "pycaw_missing", "require": "pycaw"}
+            return {"ok": False, "error": "pycaw_missing"}
         try:
-            vol = self._get_volume_interface()
-            # Set scalar expects 0.0 - 1.0
+            dev = self._AudioUtilities.GetSpeakers()
+            interface = dev.Activate(self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None)
+            vol = self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
             vol.SetMasterVolumeLevelScalar(level / 100.0, None)
-            # read back
             current = vol.GetMasterVolumeLevelScalar()
             return {"ok": True, "action": "set_volume", "level": int(round(current * 100))}
         except Exception as e:
@@ -67,9 +58,11 @@ class WindowsBackend:
         if dry_run:
             return {"ok": True, "dry_run": True, "action": "mute", "mute": bool(mute)}
         if not self.available:
-            return {"ok": False, "error": "pycaw_missing", "require": "pycaw"}
+            return {"ok": False, "error": "pycaw_missing"}
         try:
-            vol = self._get_volume_interface()
+            dev = self._AudioUtilities.GetSpeakers()
+            interface = dev.Activate(self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None)
+            vol = self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
             vol.SetMute(1 if mute else 0, None)
             return {"ok": True, "action": "mute", "mute": bool(mute)}
         except Exception as e:
@@ -78,13 +71,10 @@ class WindowsBackend:
     def open_app(self, app: str, dry_run: bool = True) -> Dict[str, Any]:
         if dry_run:
             return {"ok": True, "dry_run": True, "action": "open_app", "app": app}
-        # Windows: try Start Process via 'start' or direct shell
         try:
-            # Try shell start
             subprocess.Popen([app], shell=False)
             return {"ok": True, "action": "open_app", "app": app}
         except FileNotFoundError:
-            # try start via cmd
             try:
                 subprocess.Popen(["start", "", app], shell=True)
                 return {"ok": True, "action": "open_app", "app": app}
@@ -97,57 +87,48 @@ class WindowsBackend:
         action = action.lower()
         if dry_run:
             return {"ok": True, "dry_run": True, "action": action}
-        # map actions to Windows equivalents
         try:
             if action in ("shutdown", "poweroff"):
                 cmd = ["shutdown", "/s", "/t", "0"]
             elif action == "restart":
                 cmd = ["shutdown", "/r", "/t", "0"]
             elif action == "sleep":
-                # Use rundll32 or powercfg; sleep via nircmd or rundll32
                 cmd = ["rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0"]
             else:
                 return {"ok": False, "error": "unknown_action", "action": action}
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd, "stdout": getattr(proc, "stdout", "")}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "power_action_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "power_action_failed", "exc": str(e)}
 
-# ---------------- Linux backend ----------------
-class LinuxBackend:
+class LinuxBackend(OSBackend):
     def __init__(self):
         self.platform = "Linux"
 
     def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]:
         level = max(0, min(100, int(level)))
         cmd = ["amixer", "sset", "Master", f"{level}%"]
-
         if dry_run:
-            return {
-                "ok": True,
-                "dry_run": True,
-                "cmd": cmd,
-                "action": "set_volume",
-                "level": level
-            }
-
+            return {"ok": True, "dry_run": True, "cmd": cmd, "action": "set_volume", "level": level}
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd, "level": level}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "amixer_failed", "cmd": cmd, "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "amixer_failed", "cmd": cmd, "exc": str(e)}
-
-
-
-
 
     def mute(self, mute: bool, dry_run: bool = True) -> Dict[str, Any]:
         if dry_run:
             return {"ok": True, "dry_run": True, "action": "mute", "mute": bool(mute)}
         try:
             cmd = ["amixer", "sset", "Master", "mute" if mute else "unmute"]
-            proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "amixer_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "amixer_failed", "exc": str(e)}
 
@@ -166,13 +147,7 @@ class LinuxBackend:
     def power_action(self, action: str, dry_run: bool = True) -> Dict[str, Any]:
         action = action.lower()
         if dry_run:
-            return {
-                "ok": False,
-                "dry_run": True,
-                "error": "power_action_failed",
-                "action": action
-            }
-
+            return {"ok": False, "dry_run": True, "error": "power_action_failed", "action": action}
         try:
             if action in ("shutdown", "poweroff"):
                 cmd_candidates = [["systemctl", "poweroff"], ["shutdown", "-h", "now"]]
@@ -182,13 +157,12 @@ class LinuxBackend:
                 cmd_candidates = [["systemctl", "suspend"]]
             else:
                 return {"ok": False, "error": "unknown_action", "action": action}
-
             last_err = []
             for cmd in cmd_candidates:
                 try:
                     proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
                     return {"ok": True, "cmd": cmd, "stdout": getattr(proc, "stdout", "")}
-                except subprocess.CalledProcessError as e:
+                except _CalledProcessError as e:
                     last_err.append((cmd, str(e)))
                 except FileNotFoundError:
                     last_err.append((cmd, "not_found"))
@@ -196,29 +170,20 @@ class LinuxBackend:
         except Exception as e:
             return {"ok": False, "error": "power_action_failed", "exc": str(e)}
 
-# ---------------- MacOS backend ----------------
-class MacBackend:
+class MacBackend(OSBackend):
     def __init__(self):
         self.platform = "Darwin"
 
     def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]:
         level = max(0, min(100, int(level)))
-        cmd = ["amixer", "sset", "Master", f"{level}%"]
-
         if dry_run:
-            return {
-                "ok": True,
-                "dry_run": True,
-                "cmd": cmd,
-                "action": "set_volume",
-                "level": level
-            }
-
+            return {"ok": True, "dry_run": True, "action": "set_volume", "level": level}
         try:
-            # macOS 'osascript' approach: set volume output volume <0-100>
             cmd = ["osascript", "-e", f"set volume output volume {level}"]
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "osascript_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "osascript_failed", "exc": str(e)}
 
@@ -229,6 +194,8 @@ class MacBackend:
             cmd = ["osascript", "-e", f"set volume output muted {'true' if mute else 'false'}"]
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "osascript_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "osascript_failed", "exc": str(e)}
 
@@ -239,6 +206,8 @@ class MacBackend:
             cmd = ["open", "-a", app]
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "open_app_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "open_app_failed", "exc": str(e)}
 
@@ -257,10 +226,11 @@ class MacBackend:
                 return {"ok": False, "error": "unknown_action", "action": action}
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
             return {"ok": True, "cmd": cmd}
+        except _CalledProcessError as e:
+            return {"ok": False, "error": "power_action_failed", "exc": str(e)}
         except Exception as e:
             return {"ok": False, "error": "power_action_failed", "exc": str(e)}
 
-# ---------------- Factory ----------------
 def get_backend_for_current_platform() -> OSBackend:
     sys_plat = platform.system()
     if sys_plat == "Windows":
