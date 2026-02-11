@@ -1,9 +1,21 @@
 # kyrax_core/contact_resolver.py
 """
-Simple contacts registry / resolver adapter.
-Loads a contacts.json (or dict) and provides fuzzy/substring/phone resolution helpers.
-Used by CommandBuilder to canonicalize contact names.
+ContactResolver — Phase 4 (Command Building)
+
+Responsibilities:
+- Load and manage contact registry data
+- Normalize and resolve contact names
+- Perform fuzzy matching and ambiguity detection
+- Provide ranked candidates for clarification
+
+Non-responsibilities:
+- No UI / Playwright logic
+- No message sending
+- No persistence side-effects beyond loading contacts
+
+Used exclusively by CommandBuilder before execution.
 """
+
 
 from __future__ import annotations
 from typing import Optional, List, Tuple, Dict, Any

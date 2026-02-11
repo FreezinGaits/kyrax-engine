@@ -41,11 +41,25 @@ class WindowsBackend:
             self.available = False
 
     def _get_volume_interface(self):
-        # can raise if pycaw not installed
+        """
+        Version-safe pycaw volume accessor.
+        Works with modern pycaw (EndpointVolume property).
+        """
         dev = self._AudioUtilities.GetSpeakers()
-        interface = dev.Activate(self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None)
-        volume = self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
-        return volume
+
+        # ✅ Modern pycaw (this is what worked in your test)
+        vol = getattr(dev, "EndpointVolume", None)
+        if vol is not None:
+            return vol
+
+        # 🔁 Fallback for very old pycaw versions
+        interface = dev.Activate(
+            self._IAudioEndpointVolume._iid_,
+            self._CLSCTX_ALL,
+            None
+        )
+        return self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
+
 
     def set_volume(self, level: int, dry_run: bool = True) -> Dict[str, Any]:
         level = max(0, min(100, int(level)))
@@ -75,23 +89,76 @@ class WindowsBackend:
         except Exception as e:
             return {"ok": False, "error": "mute_failed", "exc": str(e)}
 
-    def open_app(self, app: str, dry_run: bool = True) -> Dict[str, Any]:
-        if dry_run:
-            return {"ok": True, "dry_run": True, "action": "open_app", "app": app}
-        # Windows: try Start Process via 'start' or direct shell
+    def open_app(self, app: str, dry_run: bool = False):
         try:
-            # Try shell start
-            subprocess.Popen([app], shell=False)
-            return {"ok": True, "action": "open_app", "app": app}
-        except FileNotFoundError:
-            # try start via cmd
-            try:
-                subprocess.Popen(["start", "", app], shell=True)
-                return {"ok": True, "action": "open_app", "app": app}
-            except Exception as e:
-                return {"ok": False, "error": "open_app_failed", "exc": str(e)}
+            if dry_run:
+                return {
+                    "ok": True,
+                    "action": "open_app",
+                    "app": app,
+                    "dry_run": True
+                }
+
+            app_l = app.lower().strip()
+
+            # ---- 1️⃣ Known executable aliases ----
+            EXE_ALIASES = {
+                "vscode": "code",
+                "vs code": "code",
+                "visual studio code": "code",
+                "chrome": "chrome",
+                "cmd": "cmd",
+                "powershell": "powershell",
+                "spotify": "spotify",
+                "whatsapp": "whatsapp",
+            }
+
+            # Try launching via PATH
+            if app_l in EXE_ALIASES:
+                subprocess.Popen(
+                    f'start "" {EXE_ALIASES[app_l]}',
+                    shell=True
+                )
+                return {
+                    "ok": True,
+                    "action": "open_app",
+                    "app": app,
+                    "method": "path"
+                }
+
+            # ---- 2️⃣ Try direct executable lookup ----
+            exe_path = shutil.which(app_l)
+            if exe_path:
+                subprocess.Popen([exe_path])
+                return {
+                    "ok": True,
+                    "action": "open_app",
+                    "app": app,
+                    "method": "which"
+                }
+
+            # ---- 3️⃣ LAST fallback: Windows shell start ----
+            subprocess.Popen(
+                f'start "" "{app}"',
+                shell=True
+            )
+
+            return {
+                "ok": True,
+                "action": "open_app",
+                "app": app,
+                "method": "fallback_start"
+            }
+
         except Exception as e:
-            return {"ok": False, "error": "open_app_failed", "exc": str(e)}
+            return {
+                "ok": False,
+                "error": str(e),
+                "action": "open_app",
+                "app": app
+            }
+
+
 
     def power_action(self, action: str, dry_run: bool = True) -> Dict[str, Any]:
         action = action.lower()

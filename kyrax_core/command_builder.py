@@ -237,6 +237,10 @@ class CommandBuilder:
         nlu_entities = nlu_result.get("entities") or {}
         nlu_conf = float(nlu_result.get("confidence") or 0.0)
         source = source or nlu_result.get("source") or "nlu"
+        # ---------- confidence gate (LLM only) ----------
+        if nlu_result.get("source") in ("gemini", "llm") and not nlu_result.get("is_confident", True):
+            return None, ["low_confidence"]
+        # -----------------------------------------------
 
         if not nlu_intent:
             issues.append("missing_intent")

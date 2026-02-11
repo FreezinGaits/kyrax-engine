@@ -21,6 +21,11 @@ from kyrax_core.os_policy import (
     is_high_risk_intent,
     dry_run_enabled,
 )
+from kyrax_core.policy_store import get_policy_store
+from kyrax_core import config
+from kyrax_core.audit import record as audit_record
+from kyrax_core.ratelimiter_redis import get_rate_limiter
+
 
 # simple default config — tune these for your deployment
 DEFAULT_RATE_LIMIT = {
@@ -90,7 +95,7 @@ class GuardManager:
                  rate_limiter: Optional[RateLimiter] = None,
                  role_check_fn: Optional[Callable[[str, List[str]], bool]] = None,
                  skill_registry_checker: Optional[Callable[[Dict[str,Any]], bool]] = None):
-        self.rate_limiter = rate_limiter or RateLimiter(DEFAULT_RATE_LIMIT["window_sec"], DEFAULT_RATE_LIMIT["max_requests"])
+        self.rate_limiter = rate_limiter or get_rate_limiter(DEFAULT_RATE_LIMIT["window_sec"], DEFAULT_RATE_LIMIT["max_requests"])
         # role_check_fn(user_roles, required_roles) -> bool
         self.role_check_fn = role_check_fn or (lambda user_roles, required: bool(set(user_roles) & set(required)))
         # skill_registry_checker(command) -> bool (True if a skill exists & allowed)
@@ -144,7 +149,18 @@ class GuardManager:
         # 1) rate limit
         ok, msg = self.rate_limiter.check(user_id)
         if not ok:
-            return GuardResult(allowed=False, blocked=True, require_confirmation=False, reason=msg, actions=["rate_limited"])
+            audit_record(
+                "guard_rate_limited",
+                {"user_id": user_id, "reason": msg}
+            )
+            return GuardResult(
+                allowed=False,
+                blocked=True,
+                require_confirmation=False,
+                reason=msg,
+                actions=["rate_limited"],
+            )
+
 
         # 2) skill capability check
         try:
@@ -185,6 +201,10 @@ class GuardManager:
                 and HIGH_RISK_INTENTS is not None
                 and intent in {i.lower() for i in HIGH_RISK_INTENTS}
             ):
+                audit_record(
+                    "guard_blocked_dry_run",
+                    {"user_id": user_id, "intent": intent}
+                )
                 return GuardResult(
                     allowed=False,
                     blocked=True,
@@ -196,13 +216,36 @@ class GuardManager:
 
 
 
+
             # If this is a high-risk OS intent, require explicit confirmation and admin role
             if HIGH_RISK_INTENTS is not None and intent in {i.lower() for i in HIGH_RISK_INTENTS}:
                 # require admin role for destructive OS actions
                 if "admin" not in user_roles:
-                    return GuardResult(allowed=False, blocked=True, require_confirmation=False, reason="destructive_action_requires_admin", actions=["blocked_destructive"])
+                    audit_record(
+                        "guard_blocked_destructive_no_admin",
+                        {"user_id": user_id, "intent": intent}
+                    )
+                    return GuardResult(
+                        allowed=False,
+                        blocked=True,
+                        require_confirmation=False,
+                        reason="destructive_action_requires_admin",
+                        actions=["blocked_destructive"]
+                    )
+
                 # If admin, require confirmation
-                return GuardResult(allowed=False, blocked=False, require_confirmation=True, reason="os_high_risk", actions=["confirm_destructive"])
+                audit_record(
+                    "guard_require_confirmation",
+                    {"user_id": user_id, "intent": intent}
+                )
+                return GuardResult(
+                    allowed=False,
+                    blocked=False,
+                    require_confirmation=True,
+                    reason="os_high_risk",
+                    actions=["confirm_destructive"]
+                )
+
 
         # 3) role-based ACL
         required_roles = INTENT_ROLE_REQUIREMENTS.get(cmd.intent)
@@ -273,12 +316,30 @@ class GuardManager:
         # Safe to execute
         try:
             result = dispatcher_callable(cmd)
+            audit_record(
+                "dispatch_executed",
+                {
+                    "user_id": str(user.get("id", "anonymous")),
+                    "intent": cmd.intent,
+                    "domain": cmd.domain,
+                }
+            )
             return {
                 "status": "executed",
                 "result": result,
             }
+
         except Exception as e:
+            audit_record(
+                "dispatch_error",
+                {
+                    "user_id": str(user.get("id", "anonymous")),
+                    "intent": getattr(cmd, "intent", None),
+                    "error": str(e),
+                }
+            )
             return {
                 "status": "error",
                 "reason": str(e),
             }
+

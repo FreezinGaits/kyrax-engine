@@ -11,6 +11,7 @@ Design goals:
 """
 
 from typing import List, Dict, Optional
+from kyrax_core import config
 import os
 
 # --- Default allowed OS intents (conservative) ---
@@ -78,6 +79,23 @@ def required_roles_for_intent(intent: Optional[str]) -> List[str]:
         return []
     return INTENT_ROLE_REQUIREMENTS.get(intent, [])
 
+# def dry_run_enabled() -> bool:
+#     """
+#     Dry-run is ON by default.
+#     Real destructive actions require explicit opt-in.
+#     """
+#     if os.environ.get("KYRAX_FORCE_DRY_RUN") == "1":
+#         return True
+#     return os.environ.get("KYRAX_ALLOW_REAL_POWER_ACTIONS") != "1"
+
 def dry_run_enabled() -> bool:
-    # Dry-run ONLY when explicitly forced (tests may monkeypatch this)
-    return os.environ.get("KYRAX_FORCE_DRY_RUN") == "1"
+    """
+    Return True when the system must NOT perform destructive or real system actions.
+    Priority:
+      - KYRAX_FORCE_DRY_RUN (True) => dry-run ON
+      - else: dry-run = not KYRAX_ALLOW_REAL_POWER_ACTIONS (safe default)
+    """
+    if getattr(config, "KYRAX_FORCE_DRY_RUN", False):
+        return True
+    # invert allow flag: if allow_real is False -> dry-run enabled
+    return not getattr(config, "KYRAX_ALLOW_REAL_POWER_ACTIONS", False)

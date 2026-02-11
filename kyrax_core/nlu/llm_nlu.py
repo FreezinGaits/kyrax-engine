@@ -5,7 +5,7 @@ import re
 import logging
 logger = logging.getLogger(__name__)
 from kyrax_core.llm.gemini_client import GeminiClient
-
+from kyrax_core.config import LLM_CONFIDENCE_THRESHOLD
 # small safe prompt template to ask Gemini to return strict JSON
 _PROMPT_TEMPLATE = """
 You are a strict JSON extractor for a personal assistant.
@@ -65,9 +65,13 @@ class LLMNLU:
         try:
             data = json.loads(m.group(0))
             # normalize shapes -> ensure keys exist
+            
             data.setdefault("entities", data.get("entities") or {})
             data["confidence"] = float(data.get("confidence") or 0.0)
             data["source"] = "gemini"
+            # mark if confidence below threshold
+            data["is_confident"] = data["confidence"] >= LLM_CONFIDENCE_THRESHOLD
+            
             return data
         except Exception:
             return {"intent": None, "entities": {}, "confidence": 0.0, "source": "gemini_parse_error"}

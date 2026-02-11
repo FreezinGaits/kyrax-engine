@@ -1,0 +1,34 @@
+feat(pipeline): stabilize regex-first execution with multi-command OS + WhatsApp support
+
+This commit establishes a stable milestone for the KYRAX execution pipeline
+with deterministic, regex-driven command handling and real OS execution enabled.
+
+Key capabilities confirmed working:
+- Regex-first parsing for mixed-domain commands (application + OS)
+- Sequential execution of multiple intents in a single user input
+- WhatsApp message fan-out to multiple contacts in one sentence
+- Real OS actions enabled (dry-run fully disabled via unified policy)
+  - set_volume (absolute %)
+  - mute / unmute
+  - open_app (path-based executables like Chrome)
+- Correct execution order preserved across domains
+- Dispatcher + GuardManager integration stable for non-destructive OS intents
+
+Examples verified:
+- "send hi to gautam"
+- "set volume to 20 percent"
+- "send hi to Gautam and open chrome and set volume to 80"
+- "send hi to Ravish and Gautam hello and Piyush test and set volume 40 and open chrome"
+
+Architecture notes:
+- Regex pipeline now acts as the primary, deterministic execution path
+- LLM usage is secondary and only triggered when regex parsing is unsafe or insufficient
+- os_policy is now the single source of truth for dry-run behavior
+- KYRAX_OS_DRY_RUN=false correctly enables real OS side effects
+- SkillRegistry, Dispatcher, ChainExecutor, and ContextLogger are wired end-to-end
+
+Known limitations (intentional, to be addressed later):
+- Windows Store apps (e.g., WhatsApp desktop) not yet launched via AppUserModelID
+- LLM-backed NLU can fail under Gemini model availability/rate limits
+- No rollback/transaction semantics across multi-step command chains
+- OS close_app and high-risk intents not yet validated end-to-end

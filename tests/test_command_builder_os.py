@@ -20,6 +20,7 @@ def test_set_volume_valid_percent_string():
     assert cmd is not None
     assert cmd.entities["level"] == 72
     assert issues == []
+    
 
 def test_set_volume_invalid_parse_fails():
     b = CommandBuilder()

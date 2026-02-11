@@ -1,10 +1,15 @@
 # skills/os_skill.py
+# 🔑 Runtime dry-run decision (authoritative)
+# dry_run = os_policy.dry_run_enabled()
+import os
 import platform
 import shutil
 import subprocess
 from typing import Optional, Dict, Any
 from kyrax_core.skill_base import Skill, SkillResult
 from kyrax_core.command import Command
+from kyrax_core import os_policy
+from kyrax_core import config
 import os
 from subprocess import CalledProcessError
 assert os.environ.get("PYTEST_CURRENT_TEST") is None, \
@@ -21,9 +26,17 @@ from subprocess import CalledProcessError
 class OSSkill(Skill):
     name = "os_control"
 
-    def __init__(self, dry_run: bool = True):
-        self.dry_run = True if _FORCE_DRY_RUN else dry_run
-        self.backend = None
+    def __init__(self, dry_run: bool | None = None):
+        """
+        `dry_run` is accepted for backward compatibility.
+        Actual execution mode is determined dynamically via os_policy.dry_run_enabled().
+        """
+        self.backend = self._get_backend()
+
+        # Compatibility attribute (do NOT use this internally)
+        self.dry_run = os_policy.dry_run_enabled()
+
+
 
 
     # ---------- small wrapper helper ----------
@@ -54,7 +67,7 @@ class OSSkill(Skill):
 
 
     # ---------- OS actions (delegated) ----------
-    def _set_volume(self, level: Optional[int]) -> SkillResult:
+    def _set_volume(self, level: Optional[int], dry_run: bool) -> SkillResult:
         if level is None:
             return SkillResult(False, "No volume level specified", {"missing": "level"})
         try:
@@ -71,8 +84,8 @@ class OSSkill(Skill):
                 subprocess.run(cmd, check=True, capture_output=True, text=True)
                 return SkillResult(
                     True,
-                    "OK: set_volume (dry-run)" if self.dry_run else "OK: set_volume",
-                    {"cmd": cmd, "dry_run": self.dry_run, "level": level}
+                    "OK: set_volume (dry-run)" if dry_run else "OK: set_volume",
+                    {"cmd": cmd, "dry_run": dry_run, "level": level}
                 )
             except Exception as e:
                 return SkillResult(
@@ -83,21 +96,24 @@ class OSSkill(Skill):
 
         # other platforms → backend
         backend = self._get_backend()
-        res = backend.set_volume(level=level, dry_run=self.dry_run)
+        res = backend.set_volume(level=level, dry_run=dry_run)
 
         return self._wrap_backend_result(res)
 
-    def _mute_unmute(self, mute: bool) -> SkillResult:
-        res = self.backend.mute(mute=mute, dry_run=self.dry_run)
+    def _mute_unmute(self, mute: bool, dry_run: bool) -> SkillResult:
+
+        res = self.backend.mute(mute=mute, dry_run=dry_run)
         return self._wrap_backend_result(res)
 
-    def _open_app(self, app: str) -> SkillResult:
+    def _open_app(self, app: str, dry_run: bool) -> SkillResult:
+
         if not app:
             return SkillResult(False, "No app specified to open", {"missing": "app"})
-        res = self.backend.open_app(app, dry_run=self.dry_run)
+        res = self.backend.open_app(app, dry_run=dry_run)
         return self._wrap_backend_result(res)
 
-    def _power_action(self, action: str) -> SkillResult:
+    def _power_action(self, action: str, dry_run: bool) -> SkillResult:
+
         if not action:
             return SkillResult(False, "No action specified", {"missing": "action"})
 
@@ -126,9 +142,9 @@ class OSSkill(Skill):
                     proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
                     # If we reached here, candidate succeeded.
                     msg = f"OK: {action}"
-                    if self.dry_run:
+                    if dry_run:
                         msg += " (dry-run)"
-                    return SkillResult(True, msg, {"ok": True, "dry_run": self.dry_run, "action": action, "cmd": cmd, "stdout": getattr(proc, "stdout", "")})
+                    return SkillResult(True, msg, {"ok": True, "dry_run": dry_run, "action": action, "cmd": cmd, "stdout": getattr(proc, "stdout", "")})
                 except CalledProcessError as e:
                     last_err.append((cmd, str(e)))
                 except FileNotFoundError as e:
@@ -141,7 +157,7 @@ class OSSkill(Skill):
 
         # Other platforms -> delegate to backend implementation (Windows/Mac)
         backend = self._get_backend()
-        res = backend.power_action(action=action, dry_run=self.dry_run)
+        res = backend.power_action(action=action, dry_run=dry_run)
         return self._wrap_backend_result(res)
 
 
@@ -159,10 +175,12 @@ class OSSkill(Skill):
         return intent in ("open_app", "close_app", "set_volume", "mute", "unmute", "shutdown", "restart", "sleep")
 
     def execute(self, command: Command, context: Optional[Dict[str, Any]] = None) -> SkillResult:
-        import os
+        dry_run = os_policy.dry_run_enabled()
+
+        
 
         if os.environ.get("PYTEST_CURRENT_TEST"):
-            if not self.dry_run:
+            if not dry_run:
                 return SkillResult(
                     False,
                     "OS power actions are blocked during tests",
@@ -174,16 +192,32 @@ class OSSkill(Skill):
 
         # non-destructive safety: basic checks
         if intent == "set_volume":
-            return self._set_volume(ents.get("level") or ents.get("volume") or ents.get("value"))
+            return self._set_volume(
+                ents.get("level") or ents.get("volume") or ents.get("value"),
+                dry_run=dry_run
+            )
+
         if intent in ("mute", "unmute"):
-            return self._mute_unmute(mute=(intent == "mute"))
+            return self._mute_unmute(
+                mute=(intent == "mute"),
+                dry_run=dry_run
+            )
+
         if intent == "open_app":
             # normalize app name
             app = ents.get("app") or ents.get("application") or ents.get("path")
-            return self._open_app(app)
+            return self._open_app(
+                app,
+                dry_run=dry_run
+            )
+
         if intent in ("shutdown", "restart", "sleep"):
             # these are destructive and will be confirmed by GuardManager; OSSkill only runs if allowed
-            return self._power_action(intent)
+            return self._power_action(
+                intent,
+                dry_run=dry_run
+            )
+
         if intent == "close_app":
             # best-effort: try to kill by name using platform shorthands
             app = ents.get("app") or ents.get("process")
@@ -210,7 +244,7 @@ class OSSkill(Skill):
                     # 🔑 IMPORTANT: call subprocess.run EVEN in dry-run
                     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
-                    if self.dry_run:
+                    if dry_run:
                         return SkillResult(
                             True,
                             f"Would close {app} (dry-run)",

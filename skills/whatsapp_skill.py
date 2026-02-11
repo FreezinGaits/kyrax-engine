@@ -79,12 +79,12 @@ class WhatsAppSkill(Skill):
         self.headless = headless
         self.close_on_finish = close_on_finish
         self.browser_type = browser_type
-        self.contacts = {}
-        try:
-            with open("data/contacts.json", "r", encoding="utf-8") as f:
-                self.contacts = json.load(f)
-        except Exception:
-            self.contacts = {}
+        # self.contacts = {}
+        # try:
+        #     with open("data/contacts.json", "r", encoding="utf-8") as f:
+        #         self.contacts = json.load(f)
+        # except Exception:
+        #     self.contacts = {}
         self._pw = None
         self._context = None
         self._page = None
@@ -437,19 +437,19 @@ class WhatsAppSkill(Skill):
         self._clear_search()
         return list(set(titles))
 
-    def save_contact(self, name: str, info: Optional[Dict[str,Any]] = None):
-        """
-        Add to in-memory contacts and persist to data/contacts.json.
-        User must confirm before calling this.
-        """
-        info = info or {"whatsapp_name": name, "source": "ui_discovered"}
-        self.contacts[name] = info
-        try:
-            os.makedirs("data", exist_ok=True)
-            with open("data/contacts.json", "w", encoding="utf-8") as f:
-                json.dump(self.contacts, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+    # def save_contact(self, name: str, info: Optional[Dict[str,Any]] = None):
+    #     """
+    #     Add to in-memory contacts and persist to data/contacts.json.
+    #     User must confirm before calling this.
+    #     """
+    #     info = info or {"whatsapp_name": name, "source": "ui_discovered"}
+    #     self.contacts[name] = info
+    #     try:
+    #         os.makedirs("data", exist_ok=True)
+    #         with open("data/contacts.json", "w", encoding="utf-8") as f:
+    #             json.dump(self.contacts, f, ensure_ascii=False, indent=2)
+    #     except Exception:
+    #         pass
 
 
     def _send_text(self, message: str) -> bool:
@@ -633,15 +633,15 @@ class WhatsAppSkill(Skill):
             # ✅ Save contact if:
             # - message was sent
             # - AND contact not already saved
-            if contact_query not in self.contacts:
-                self.save_contact(
-                    contact_query,
-                    {
-                        "name": contact_query,
-                        "whatsapp_name": contact_query,
-                        "source": "ui_auto_saved"
-                    }
-                )
+            # if contact_query not in self.contacts:
+            #     self.save_contact(
+            #         contact_query,
+            #         {
+            #             "name": contact_query,
+            #             "whatsapp_name": contact_query,
+            #             "source": "ui_auto_saved"
+            #         }
+            #     )
 
 
 
@@ -676,64 +676,37 @@ class WhatsAppSkill(Skill):
             return SkillResult(False, "No text provided")
         if not contact:
             return SkillResult(False, "No contact provided")
+        # Phase-5 rule:
+        # Contact MUST already be canonicalized by CommandBuilder / ContactResolver
+        contact_query = str(contact)
+
 
         # resolve contact from registry or accept phone number (main thread)
-        cinfo = self.contacts.get(contact) or next(
-            (v for k, v in self.contacts.items() if k.lower() == str(contact).lower()), None
-        )
-        contact_query = None
-        if cinfo:
-            contact_query = cinfo.get("whatsapp_name") or cinfo.get("name") or cinfo.get("phone") or contact
-        else:
-            s = str(contact).strip()
-            s_clean = re.sub(r'\s*\(.*\)$', '', s).strip()
-            digits = re.sub(r'\D', '', s_clean)
-            if digits and len(digits) >= 7:
-                contact_query = digits
-            else:
-                matches = []
-                qlow = s_clean.lower()
-                for k, v in self.contacts.items():
-                    if qlow == k.lower() or qlow in k.lower() or k.lower() in qlow:
-                        matches.append((k, v))
-                if len(matches) == 1:
-                    k, v = matches[0]
-                    contact_query = v.get("whatsapp_name") or v.get("name") or v.get("phone") or k
-                elif len(matches) > 1:
-                    return SkillResult(False, "Ambiguous contact; multiple matches", {"candidates": [m[0] for m in matches]})
-                else:
-                    contact_query = s_clean
-            
-            # if contact not canonicalized by contacts.json, try UI resolution (best-effort)
-            # 🔥 ALWAYS try UI resolution when name is not an exact saved key
-            # try:
-            #     # new: ensure thread-local initialized inside worker and call resolver there
-            #     ui_matches = self._executor.submit(
-            #         self._resolve_contact_in_worker, contact_query
-            #     ).result(timeout=12)
-
-
-            #     if not ui_matches:
-            #         return SkillResult(
-            #             False,
-            #             f"No WhatsApp contact found for '{contact_query}'."
-            #         )
-
-            #     if len(ui_matches) > 1:
-            #         return SkillResult(
-            #             False,
-            #             "Multiple contacts found with this name. Please specify the full name.",
-            #             {"candidates": ui_matches}
-            #         )
-
-            #     # ✅ EXACTLY ONE MATCH
-            #     contact_query = ui_matches[0]
-            #     ui_resolved = True
-
-            # except Exception:
-            #     pass
-
-
+        # cinfo = self.contacts.get(contact) or next(
+        #     (v for k, v in self.contacts.items() if k.lower() == str(contact).lower()), None
+        # )
+        # contact_query = None
+        # if cinfo:
+        #     contact_query = cinfo.get("whatsapp_name") or cinfo.get("name") or cinfo.get("phone") or contact
+        # else:
+        #     s = str(contact).strip()
+        #     s_clean = re.sub(r'\s*\(.*\)$', '', s).strip()
+        #     digits = re.sub(r'\D', '', s_clean)
+        #     if digits and len(digits) >= 7:
+        #         contact_query = digits
+        #     else:
+        #         matches = []
+        #         qlow = s_clean.lower()
+        #         for k, v in self.contacts.items():
+        #             if qlow == k.lower() or qlow in k.lower() or k.lower() in qlow:
+        #                 matches.append((k, v))
+        #         if len(matches) == 1:
+        #             k, v = matches[0]
+        #             contact_query = v.get("whatsapp_name") or v.get("name") or v.get("phone") or k
+        #         elif len(matches) > 1:
+        #             return SkillResult(False, "Ambiguous contact; multiple matches", {"candidates": [m[0] for m in matches]})
+        #         else:
+        #             contact_query = s_clean
 
         # Run all Playwright sync API in a dedicated thread (no asyncio loop there)
         try:

@@ -3,40 +3,51 @@ from typing import Dict, Any, Optional
 from .command import Command
 
 
-def map_nlu_to_command(nlu_payload: Dict[str, Any], default_domain: Optional[str] = None, source: str = "text") -> Command:
-    """
-    Convert an NLU output / intent object to a KYRAX Command.
-
-    Expected nlu_payload example (Leon-style simplified):
-    {
-      "intent": "send_message",
-      "slots": {"contact": "Rohit", "message": "Hi"},
-      "confidence": 0.92,
-      "meta": {...}
-    }
-
-    This mapper is intentionally simple — add custom rules per project.
-    """
-
-    intent = nlu_payload.get("intent") or nlu_payload.get("name") or ""
+def map_nlu_to_command(
+    nlu_payload: Dict[str, Any],
+    default_domain: Optional[str] = None,
+    source: str = "text"
+) -> Command:
+    intent = (nlu_payload.get("intent") or nlu_payload.get("name") or "").lower()
     slots = nlu_payload.get("slots", {}) or nlu_payload.get("entities", {}) or {}
     confidence = float(nlu_payload.get("confidence", 1.0))
     meta = nlu_payload.get("meta", {})
 
-    # Basic domain inference heuristics
-    domain = default_domain or guess_domain_from_intent(intent, slots)
+    # ---------- CANONICAL OS INTENT MAPPING ----------
+    OS_INTENT_MAP = {
+        "set_volume": "set_volume",
+        "change_volume": "set_volume",
+        "adjust_volume": "set_volume",
+        "volume": "set_volume",
+        "mute": "mute",
+        "mute_volume": "mute",
+        "unmute": "unmute",
+        "unmute_volume": "unmute",
+        "open_app": "open_app",
+        "launch_app": "open_app",
+        "open": "open_app",
+        "close_app": "close_app",
+        "close": "close_app",
+    }
 
-    # Normalise some common slot names into execution parameters
+    if intent in OS_INTENT_MAP:
+        canon_intent = OS_INTENT_MAP[intent]
+        domain = "os"
+    else:
+        canon_intent = intent
+        domain = default_domain or guess_domain_from_intent(intent, slots)
+
     entities = normalize_entities(slots)
 
     return Command(
-        intent=intent,
+        intent=canon_intent,
         domain=domain,
         entities=entities,
         confidence=confidence,
         source=source,
-        meta=meta
+        meta=meta,
     )
+
 
 
 def guess_domain_from_intent(intent: str, slots: Dict[str, Any]) -> str:
