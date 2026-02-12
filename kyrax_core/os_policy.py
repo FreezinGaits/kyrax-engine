@@ -22,6 +22,7 @@ ALLOWED_OS_INTENTS: List[str] = [
     "set_volume",
     "mute",
     "unmute",
+    "browser_search"
     # optional next-phase features (keep commented until implemented):
     # "set_brightness",
     # "reveal_file",

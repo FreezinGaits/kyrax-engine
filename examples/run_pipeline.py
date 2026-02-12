@@ -658,6 +658,19 @@ def main():
                             )
                         )
                         continue
+                    # ---- browser search ----
+                    m = re.search(r'\b(search|google)\b\s+(?P<q>.+)', clause, re.I)
+                    if m:
+                        detected_commands.append(
+                            Command(
+                                intent="browser_search",
+                                domain="os",
+                                entities={"query": m.group("q").strip()},
+                                confidence=1.0,
+                                source="regex_browser"
+                            )
+                        )
+                        continue
 
                     # ---- mute ----
                     if clause.lower() in ("mute", "mute volume"):

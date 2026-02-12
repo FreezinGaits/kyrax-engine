@@ -1,7 +1,6 @@
 # skills/os_skill.py
 # 🔑 Runtime dry-run decision (authoritative)
 # dry_run = os_policy.dry_run_enabled()
-import os
 import platform
 import shutil
 import subprocess
@@ -11,6 +10,8 @@ from kyrax_core.command import Command
 from kyrax_core import os_policy
 from kyrax_core import config
 import os
+import webbrowser
+import urllib.parse
 from subprocess import CalledProcessError
 assert os.environ.get("PYTEST_CURRENT_TEST") is None, \
     "OSSkill loaded during pytest — power actions are disabled"
@@ -64,7 +65,26 @@ class OSSkill(Skill):
             return MacBackend()
         return LinuxBackend()
 
+    def browser_search(self, query: str, dry_run: bool = False):
+        if dry_run:
+            return {
+                "ok": True,
+                "action": "browser_search",
+                "query": query,
+                "dry_run": True
+            }
 
+        encoded = urllib.parse.quote_plus(query)
+        url = f"https://www.google.com/search?q={encoded}"
+
+        webbrowser.open(url)
+
+        return {
+            "ok": True,
+            "action": "browser_search",
+            "query": query,
+            "url": url
+        }
 
     # ---------- OS actions (delegated) ----------
     def _set_volume(self, level: Optional[int], dry_run: bool) -> SkillResult:
@@ -168,11 +188,27 @@ class OSSkill(Skill):
     def can_handle(self, command: Command) -> bool:
         if not command or not hasattr(command, "intent"):
             return False
+
         if command.domain != "os":
             return False
+
         intent = (command.intent or "").lower()
-        # support common OS intents
-        return intent in ("open_app", "close_app", "set_volume", "mute", "unmute", "shutdown", "restart", "sleep")
+
+        print("OSSkill.can_handle called for:", intent)  # debug AFTER defining
+
+        return intent in (
+            "open_app",
+            "close_app",
+            "set_volume",
+            "mute",
+            "unmute",
+            "browser_search",
+            "shutdown",
+            "restart",
+            "sleep",
+        )
+
+
 
     def execute(self, command: Command, context: Optional[Dict[str, Any]] = None) -> SkillResult:
         dry_run = os_policy.dry_run_enabled()
@@ -189,6 +225,12 @@ class OSSkill(Skill):
 
         intent = (command.intent or "").lower()
         ents = command.entities or {}
+
+        if intent == "browser_search":
+            return self.browser_search(
+                query=ents.get("query"),
+                dry_run=dry_run
+            )
 
         # non-destructive safety: basic checks
         if intent == "set_volume":
