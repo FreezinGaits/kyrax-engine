@@ -103,6 +103,13 @@ if USE_LLM:
     from kyrax_core.nlu.llm_nlu import LLMNLU
     from kyrax_core.ai_reasoner import AIReasoner
 
+# Lazy import for Voice Adapter
+WhisperVoiceAdapter = None
+try:
+    from kyrax_core.adapters.voice_adapter import WhisperVoiceAdapter
+except ImportError:
+    pass
+
 # -------------------------
 # Helper clause splitter
 # -------------------------
@@ -538,6 +545,26 @@ def main():
     # Minimal "user" context used by GuardManager; extend as needed.
     # user = {"id": "local_user", "roles": ["user"]}
 
+    # --- VOICE MODE PROMPT ---
+    use_voice = False
+    voice_adapter = None
+    if WhisperVoiceAdapter:
+        print("\n🎤 Voice Command Mode Available")
+        ans = input("Enable voice commands? (y/N): ").strip().lower()
+        if ans in ("y", "yes"):
+           try:
+               print("Initializing Whisper model (this may take a moment)...")
+               voice_adapter = WhisperVoiceAdapter(model_name="base", default_mode="mic", record_seconds=5)
+               # Trigger model load now to fail fast or show progress
+               _ = voice_adapter.model 
+               use_voice = True
+               print("✓ Voice mode enabled. System will listen for 5s after each prompt.")
+           except Exception as e:
+               print(f"❌ Failed to initialize voice adapter: {e}")
+               use_voice = False
+    else:
+        print("\n(Voice adapter dependencies not found. Skipping voice mode prompt.)")
+
     # CLI confirm function used to ask the human (works in interactive CLI).
     def cli_confirm_fn(prompt: str) -> bool:
         # Non-interactive environments (CI/tests) will gracefully return False
@@ -562,7 +589,34 @@ def main():
     try:
         while True:
             try:
-                raw = input("\n> ").strip()
+                if use_voice and voice_adapter:
+                   print("\n🎤 Listening... (Speak now)")
+                   try:
+                       adapter_out = voice_adapter.listen()
+                       raw = adapter_out.text
+                       print(f"🗣️ Heard: '{raw}'")
+                   except Exception as e:
+                       print(f"Error listening: {e}")
+                       raw = ""
+                   
+                   # Allow typing override if listening fails or produces empty execution
+                   if not raw:
+                       raw = input("\n> (fallback to text) ").strip()
+                else:
+                    raw = input("\n> ").strip()
+
+                # Special command to toggle voice
+                if raw.lower() in ("toggle voice", "voice off", "voice on"):
+                    if use_voice:
+                        use_voice = False
+                        print("Voice mode disabled.")
+                    elif voice_adapter:
+                        use_voice = True
+                        print("Voice mode enabled.")
+                    else:
+                        print("Voice adapter not available.")
+                    continue
+
                 multi_cmds = extract_send_commands(raw)   # ✅ ADD THIS BACK
                 # --------------------------------------------
                 # Phase-3 regex command collection (NO EXECUTE)
@@ -1415,7 +1469,15 @@ def main():
 
             if guard_result.get("status") == "executed":
                 result = guard_result.get("result")
-                print("Result:", result)
+                result = guard_result.get("result")
+                if result:
+                    icon = "✅" if getattr(result, "success", False) else "❌"
+                    msg = getattr(result, "message", str(result))
+                    print(f"{icon} Execution Result: {msg}")
+                    if not getattr(result, "success", False):
+                         print(f"   Details: {getattr(result, 'data', '')}")
+                else:
+                    print("⚠️ Executed but no result returned.")
 
                 if result and getattr(result, "success", False):
                     try:

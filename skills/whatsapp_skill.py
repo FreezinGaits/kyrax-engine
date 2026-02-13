@@ -20,7 +20,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
@@ -302,22 +302,24 @@ class WhatsAppSkill(Skill):
             pass
 
     # ---------------- helpers ----------------
-    def _find_and_open_chat(self, contact_query: str, timeout: int = 20000) -> bool:
+    def _find_and_open_chat(self, contact_query: str, timeout: int = 20000) -> Tuple[bool, str]:
         """
         Uses WhatsApp Web search to find contact and open chat.
-        Returns True if exact contact opened, False otherwise.
-        This function is more robust: exact -> contains -> first-result fallback.
+        Returns:
+            (True, "opened") if found and opened.
+            (False, "not_found") if search completed but contact not found.
+            (False, "error") if technical failure (selector missing, etc).
         """
         self._ensure_browser()
         _, page = self._state()
         if not page:
-            return False
+            return False, "error"
 
         try:
             search_input = page.locator('div[aria-label="Search input textbox"]')
             search_input.wait_for(state="visible", timeout=10000)
         except Exception:
-            return False
+            return False, "error"
 
         try:
             # robust clear
@@ -345,7 +347,7 @@ class WhatsAppSkill(Skill):
                 contact_locator.wait_for(state="visible", timeout=3000)
                 contact_locator.first.click()
                 page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
-                return True
+                return True, "opened"
             except Exception:
                 # not exact -> continue to fallback
                 pass
@@ -362,7 +364,7 @@ class WhatsAppSkill(Skill):
                 if contains_loc.count() > 0:
                     contains_loc.first.click()
                     page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
-                    return True
+                    return True, "opened"
             except Exception:
                 pass
 
@@ -373,7 +375,7 @@ class WhatsAppSkill(Skill):
                 if results.count() == 1:
                     results.first.click()
                     page.wait_for_selector("footer div[contenteditable='true']", timeout=8000)
-                    return True
+                    return True, "opened"
             except Exception:
                 pass
 
@@ -387,10 +389,10 @@ class WhatsAppSkill(Skill):
                     search_input.fill("")
                 except Exception:
                     pass
-            return False
+            return False, "not_found"
 
         except Exception:
-            return False
+            return False, "error"
     def resolve_contact_via_whatsapp_ui(self, name: str, wait_ms: int = 1200) -> list[str]:
         """
         Returns list of matching chat titles.
@@ -590,13 +592,25 @@ class WhatsAppSkill(Skill):
             # 3️⃣ Try to open chat (FIRST ATTEMPT)
             if ui_resolved:
                 opened = True  # chat already resolved by UI
+                reason = "opened"
             else:
-                opened = self._find_and_open_chat(contact_query)
+                opened, reason = self._find_and_open_chat(contact_query)
 
 
-            # 4️⃣ If chat not opened, assume page/context was closed or stale → RECOVER ONCE
+            # 4️⃣ If chat not opened...
             if not opened:
+                # If reason is "not_found", it means the search worked but contact is missing.
+                # DO NOT RETRY (avoids closing browser).
+                if reason == "not_found":
+                     return SkillResult(
+                        False,
+                        f"Contact '{contact_query}' not found (search produced no results)",
+                        {"contact_query": contact_query}
+                     )
+
+                # If reason is "error" (technical) OR we are not sure, we try to recover/reopen ONCE.
                 try:
+                    print("[WhatsAppSkill] Technical issue opening chat. Retrying with browser reset...")
                     # Hard reset: recreate browser context
                     try:
                         self._cleanup()
@@ -608,17 +622,20 @@ class WhatsAppSkill(Skill):
                     self._ensure_home_view()
 
                     # Retry opening chat ONCE
-                    opened = self._find_and_open_chat(contact_query)
+                    opened, reason = self._find_and_open_chat(contact_query)
+                    if not opened:
+                        return SkillResult(
+                            False,
+                            f"Contact '{contact_query}' not found or WhatsApp error (after retry)",
+                            {"contact_query": contact_query}
+                        )
 
-                except Exception:
-                    opened = False
-
-            if not opened:
-                return SkillResult(
-                    False,
-                    f"Contact '{contact_query}' not found or WhatsApp not ready",
-                    {"contact_query": contact_query}
-                )
+                except Exception as e:
+                    return SkillResult(
+                        False,
+                        f"Failed to open chat after retry: {e}",
+                        {"contact_query": contact_query}
+                    )
 
             # 5️⃣ Send the message
             sent = self._send_text(text)

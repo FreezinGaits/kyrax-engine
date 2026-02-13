@@ -27,7 +27,16 @@ from difflib import SequenceMatcher
 
 
 def _norm(s: str) -> str:
-    return re.sub(r'\s+', ' ', (s or "").strip().lower())
+    # Remove punctuation and extra whitespace, convert to lower
+    s = re.sub(r'[^\w\s]', '', s or "")
+    return re.sub(r'\s+', ' ', s).strip().lower()
+
+# Common voice transcription errors map (canonical correction)
+TRANSCRIPTION_CORRECTIONS = {
+    "gotham": "gautam sharma",
+    "gothan": "gautam sharma",
+    "gautam": "gautam sharma",
+}
 
 
 class ContactResolver:
@@ -123,6 +132,17 @@ class ContactResolver:
             return []
 
         scored: List[Tuple[str, float]] = []
+
+        # check corrections map
+        if q in TRANSCRIPTION_CORRECTIONS:
+            corrected_key = TRANSCRIPTION_CORRECTIONS[q]
+            # Verify the corrected key exists in contacts
+            # We need to find the exact key that matches the normalized correction
+            # This is a bit indirect, but effective.
+            # actually, if corrections maps 'gotham' -> 'gautam sharma', we should return 'Gautam Sharma' (the real key)
+            for k in self._keys:
+                if _norm(k) == _norm(corrected_key):
+                    return [(k, 1.0)]
 
         # phone exact match check
         digits = re.sub(r'\D', '', query)
