@@ -18,7 +18,7 @@ def gemini_llm_callable(model: Optional[str] = None) -> Optional[Callable[[str, 
     """
     try:
         from kyrax_core.llm.gemini_client import GeminiClient
-    except ImportError:
+    except ImportError: 
         return None
     
     api_key = os.environ.get("GEMINI_API_KEY")

@@ -6,7 +6,7 @@ import threading
 import re
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
+if TYPE_CHECKING: 
     from kyrax_core.command import Command
 
 _PRONOUNS = {"him", "her", "them", "it", "that", "this", "they", "he", "she", "itself", "himself", "herself", "previous", "last", "earlier", "recent", "again", "previous contact", "previously"}
@@ -59,7 +59,7 @@ class ContextLogger:
         with self._lock:
             now = time.time()
             for ts, rec in reversed(self._store):
-                if (now - ts) > self.ttl:
+                if (now - ts) > self.ttl: # it ensures that we don’t accidentally return stale context. Even if _trim already removed expired entries, this is a second line of defense.
                     continue
                 val = rec.get(key)
                 if val not in (None, "", []):
@@ -78,18 +78,20 @@ class ContextLogger:
                 return v
         return None
 
-    def _clean_contact_str(self, s: Optional[str]) -> Optional[str]:
-        if s is None:
-            return None
-        s = str(s).strip()
-        # remove common noisy prefixes/suffixes like "my friend", "again", "please", "the", "previous"
-        s = re.sub(r'^(my\s+friend\s+|my\s+pal\s+|the\s+)', '', s, flags=re.I)
-        s = re.sub(r'\b(again|please|previous contact|previous|last)\b', '', s, flags=re.I)
-        s = re.sub(r'\s+', ' ', s).strip()
-        # Titlecase name-like tokens (keep numbers as-is)
-        if re.search(r'[A-Za-z]', s):
-            return " ".join([p.capitalize() for p in s.split()])
-        return s
+    #weaker method than the previous _clean_contact_str, as it only removes prefixes/suffixes if the entire string is a conversational token, otherwise it assumes the user is trying to provide a name and applies title-casing. This is to avoid over-cleaning cases where the user might say something like "my friend Akshat" and we want to preserve "Akshat" rather than stripping it down to nothing.:
+
+    # def _clean_contact_str(self, s: Optional[str]) -> Optional[str]:
+    #     if s is None:
+    #         return None
+    #     s = str(s).strip()
+    #     # remove common noisy prefixes/suffixes like "my friend", "again", "please", "the", "previous"
+    #     s = re.sub(r'^(my\s+friend\s+|my\s+pal\s+|the\s+)', '', s, flags=re.I)
+    #     s = re.sub(r'\b(again|please|previous contact|previous|last)\b', '', s, flags=re.I)
+    #     s = re.sub(r'\s+', ' ', s).strip()
+    #     # Titlecase name-like tokens (keep numbers as-is)
+    #     if re.search(r'[A-Za-z]', s):
+    #         return " ".join([p.capitalize() for p in s.split()])
+    #     return s
 
     # inside class ContextLogger:
     def fill_missing_entities(self, entities: Dict[str, Any], required_keys: Optional[list] = None, raw_text: Optional[str] = None) -> Dict[str, Any]:
@@ -137,7 +139,7 @@ class ContextLogger:
 
     def snapshot(self) -> list:
         with self._lock:
-            return [rec.copy() for ts, rec in self._store]
+            return [rec.copy() for _, rec in self._store] # previously at the place of _ there was ts, but since timestamp is already stored in rec["timestamp"], we can just ignore the ts variable in the loop and use rec["timestamp"] when needed. This avoids confusion and keeps the code cleaner.
 
     def get_all(self) -> Dict[str, Any]:
         """
@@ -158,3 +160,151 @@ class ContextLogger:
                     if key != "timestamp" and key not in result and value not in (None, "", []):
                         result[key] = value
             return result
+    # Suppose the store contains:
+
+    # python
+    # self._store = deque([
+    #     (ts1, {"last_contact": "Akshat", "last_text": "hi"}),
+    #     (ts2, {"last_contact": "Gautam", "last_app": "WhatsApp"})
+    # ])
+    # Calling get_all() returns:
+
+    # python
+    # {
+    #     "last_contact": "Gautam",   # most recent
+    #     "last_text": "hi",          # from earlier record
+    #     "last_app": "WhatsApp"      # most recent
+    # }
+
+
+
+
+
+
+
+
+
+
+
+
+# Here’s a **detailed summary of all the functions and methods** in your `ContextLogger` module, including the helper functions:
+
+# ---
+
+# ## 🔹 Module-Level Helpers
+
+# ### `_PRONOUNS`
+# - A set of pronoun-like tokens (`"him"`, `"her"`, `"again"`, `"previous"`, etc.).
+# - Used to detect when the user refers to something indirectly (e.g., “send it again”).
+
+# ### `_clean_contact_str(s: str) -> str`
+# - Cleans conversational noise from contact names.
+# - Removes prefixes like `"my friend"`, `"the"`, `"a"`.
+# - Removes trailing tokens like `"again"`, `"please"`, `"earlier"`.
+# - Collapses spaces and applies title-casing.
+# - Ensures `"my friend Akshat"` becomes `"Akshat"`.
+
+# ---
+
+# ## 🔹 Class: `ContextLogger`
+
+# ### `__init__(self, max_entries=50, ttl_seconds=600)`
+# - Initializes the logger.
+# - `max_entries`: maximum number of records stored.
+# - `ttl_seconds`: time-to-live for records (default 10 minutes).
+# - Creates:
+#   - `self._lock`: threading lock for safe concurrent access.
+#   - `self._store`: deque to hold `(timestamp, record_dict)` entries.
+
+# ---
+
+# ### `_trim(self)`
+# - Cleans up the store:
+#   - Removes entries older than TTL.
+#   - Removes oldest entries if the deque exceeds `max_entries`.
+# - Ensures memory stays fresh and bounded.
+
+# ---
+
+# ### `update_from_command(self, cmd: "Command")`
+# - Builds a record dictionary from a `Command` object:
+#   - `last_intent`, `last_app`, `last_contact`, `last_device`, `last_text`.
+#   - Adds a `timestamp`.
+# - Appends `(time, record)` to the store under lock.
+# - Calls `_trim` to clean up immediately.
+# - Purpose: log each incoming command for later context resolution.
+
+# ---
+
+# ### `get_most_recent(self, key: str) -> Optional[Any]`
+# - Retrieves the most recent non-empty value for a given key.
+# - Iterates backwards through the store.
+# - Skips expired entries (`(now - ts) > ttl`).
+# - Returns the first valid value found.
+# - Defensive check ensures stale context is never returned, even if `_trim` missed it.
+
+# ---
+
+# ### `resolve_pronoun(self, token: str) -> Optional[Any]`
+# - Resolves pronoun-like tokens (`"him"`, `"her"`, `"again"`, etc.).
+# - If the token is in `_PRONOUNS`, searches for the most recent value among:
+#   - `last_contact`, `last_device`, `last_app`, `last_text`.
+# - Returns the resolved entity if found.
+# - Purpose: handle vague user input like “send it again” or “message him.”
+
+# ---
+
+# ### `fill_missing_entities(self, entities: Dict[str, Any], required_keys: Optional[list] = None, raw_text: Optional[str] = None) -> Dict[str, Any]`
+# - Fills in missing or pronoun-like entities using context.
+# - Steps:
+#   1. Copies input entities.
+#   2. Defines `_mentions_previous` → detects words like “previous,” “last,” “again” in raw text.
+#   3. For each required key:
+#      - If present and conversational, clean with `_clean_contact_str`.
+#      - If missing, and raw text mentions previous, pull from context (`get_most_recent`).
+#      - If present but pronoun-like, resolve with `resolve_pronoun`.
+#   4. Cleans contact fields again at the end.
+# - Purpose: make incomplete commands usable by filling gaps from history.
+
+# ---
+
+# ### `snapshot(self) -> list`
+# - Returns a list of **copies** of all records in the store.
+# - Uses lock for thread safety.
+# - Ignores the outer timestamp since each record already has its own `"timestamp"`.
+# - Purpose: debugging or inspection of full history.
+
+# ---
+
+# ### `get_all(self) -> Dict[str, Any]`
+# - Returns a **flattened dict** of the most recent values for each key.
+# - Iterates backwards through the store:
+#   - Stops at expired entries.
+#   - For each record, adds keys not already set.
+#   - Most recent wins.
+# - Ignores `"timestamp"` and empty values.
+# - Example output:
+#   ```python
+#   {
+#       "last_contact": "Gautam",
+#       "last_text": "hi",
+#       "last_app": "WhatsApp"
+#   }
+#   ```
+# - Purpose: provide a simple “current context state” for planners/reasoners.
+
+# ---
+
+# ## ✅ Overall Summary
+# - **Helpers**: `_clean_contact_str` and `_mentions_previous` normalize conversational input.  
+# - **Storage**: `_store` holds a rolling history of command records.  
+# - **Safety**: `_lock` ensures thread-safe access; `_trim` keeps memory bounded.  
+# - **Retrieval**: `get_most_recent` and `get_all` fetch context safely.  
+# - **Resolution**: `resolve_pronoun` and `fill_missing_entities` handle vague or incomplete user input.  
+# - **Inspection**: `snapshot` gives a full history for debugging.  
+
+# Together, this module acts as a **short-term conversational memory system**: it logs commands, cleans them, and resolves pronouns or missing entities so the assistant can understand vague follow-ups like “send it again” or “message him.”  
+
+# ---
+
+# 👉 Would you like me to also create a **flow diagram** showing how a user utterance like `"send again"` travels through `update_from_command → fill_missing_entities → resolve_pronoun → get_most_recent` to become a fully resolved command? That would make the pipeline crystal clear.

@@ -30,16 +30,6 @@ import logging
 import json
 import re
 from typing import List
-# if os.environ.get("KYRAX_MODE", "").lower() == "regex":
-#     os.environ.pop("GEMINI_API_KEY", None)
-#     os.environ.pop("GOOGLE_API_KEY", None)
-
-# core pipeline pieces
-# use LLM adapter abstraction (Gemini-backed)
-# from kyrax_core.llm_adapters import get_llm_callable, gemini_llm_callable
-# from kyrax_core.llm.gemini_client import GeminiClient  # Still needed for LLMNLU
-# from kyrax_core.nlu.llm_nlu import LLMNLU
-# after LLM env detection prints in examples/run_pipeline.py
 from kyrax_core.os_policy import dry_run_enabled, ALLOWED_OS_INTENTS, HIGH_RISK_INTENTS
 
 print("KYRAX OS policy:")
@@ -53,7 +43,6 @@ from kyrax_core.context_logger import ContextLogger
 from kyrax_core.skill_registry import SkillRegistry
 from kyrax_core.dispatcher import Dispatcher
 from kyrax_core.command import Command
-# from kyrax_core.ai_reasoner import AIReasoner
 from kyrax_core.chain_executor import ChainExecutor
 from kyrax_core.workflow_manager import WorkflowStore, STATUS_COMPLETED, STATUS_FAILED
 # utils we added
@@ -76,8 +65,10 @@ USE_REGEX = True
 # LLM is used ONLY if regex fails AND API key exists
 USE_LLM = bool(
     os.environ.get("GEMINI_API_KEY")
-    or os.environ.get("GOOGLE_API_KEY")
-    or os.environ.get("OPENAI_API_KEY")
+    or 
+    os.environ.get("GOOGLE_API_KEY")
+    or 
+    os.environ.get("OPENAI_API_KEY")
 )
 
 # diagnostic: print env detection immediately so we can see what's visible to Python
@@ -102,6 +93,7 @@ log.debug(
 )
 # -------------------------------------------------------------
 
+# Lazy Imports: we import LLM-related modules only if USE_LLM is True to avoid import-time side effects and speed up startup when LLM is not used, especially since GeminiClient and LLMNLU may have heavy dependencies and we want the CLI to be responsive for regex commands even if LLM is not configured, and to prevent import errors in environments without LLM keys when we won't be using those features anyway, and to allow the CLI to start up and run regex commands even if there's an issue with the LLM adapter or API key (we'll handle that gracefully at runtime). This also allows us to print diagnostic information about LLM env vars before attempting any imports that might fail due to missing keys or dependencies.
 GeminiClient = None
 LLMNLU = None
 AIReasoner = None
@@ -124,7 +116,7 @@ def extract_multiple_contacts(raw: str, resolver):
     for t in tokens:
         t = t.strip()
         if not t:
-            continue
+            continue # skips empty tokens like: Empty strings from "and and"
         # Ask resolver for best match
         cands = resolver.candidates(t, n=1, cutoff=0.4)
         if cands:
@@ -161,7 +153,7 @@ def _looks_like_suspect_contact(contact: str) -> bool:
     # otherwise assume it's probably OK (name-like)
     return False
 
-
+# Fan‑out here means splitting one send command into multiple recipients using shorthand clauses. It’s a way to handle natural multi‑recipient instructions like "send hi to Akshat and Gautam hello" safely and predictably.
 def is_safe_for_regex_execution(raw: str) -> bool:
     """
     Strict semantic gate for deterministic execution.
@@ -322,6 +314,13 @@ def extract_send_commands(raw: str):
       - hi to alice
       - send hi to alice and hello to bob  (after fan-out)
       - send alice hi and bob hello
+    Purpose: Extract structured {contact, text} pairs from conversational “send” commands.
+    Approach: Regex patterns for different natural language forms.
+    Features:
+    Handles multiple clauses (and, commas).
+    Normalizes “saying” → :.
+    Conservative checks to avoid false positives.
+    Output: Clean list of dicts ready for downstream processing (like sending messages).
     """
     out = []
     if not raw or not raw.strip():
@@ -388,9 +387,6 @@ def extract_send_commands(raw: str):
             continue
 
     return out
-
-
-
 
 
 # -------------------------

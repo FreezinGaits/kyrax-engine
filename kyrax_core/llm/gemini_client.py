@@ -27,7 +27,7 @@ class GeminiClient:
         "models/gemini-flash-latest",
         # "models/gemini-2.5-flash",
     ]
-    
+
 
     def __init__(self, model: str | None = None):
         api_key = os.getenv("GEMINI_API_KEY")

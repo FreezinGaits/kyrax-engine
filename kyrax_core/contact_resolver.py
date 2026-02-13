@@ -53,6 +53,8 @@ class ContactResolver:
             try:
                 with open(os.path.abspath(contacts_path), "r", encoding="utf-8") as f:
                     self._contacts = json.load(f)
+                # >>> os.path.abspath("data/contacts.json")
+                # 'D:\\Code Playground\\kyrax-engine\\data\\contacts.json'
             except Exception:
                 self._contacts = {}
 
@@ -72,7 +74,7 @@ class ContactResolver:
                 if phone:
                     names.add(re.sub(r'\D', '', str(phone)))
             self._variants[k] = list(names)
-
+# (Note: duplicates collapse because names is a set before converting to list.)
     def reload(self, contacts_path: Optional[str] = None):
         """Reload from disk (useful during development)."""
         if contacts_path:
@@ -97,10 +99,21 @@ class ContactResolver:
                     names.add(re.sub(r'\D', '', str(phone)))
             self._variants[k] = list(names)
 
+
+    # _score_pair uses SequenceMatcher to compute a similarity score between the normalized query and candidate. It’s a way to do fuzzy contact search so that near matches (typos, small differences) can still be recognized.
     def _score_pair(self, query_norm: str, candidate_norm: str) -> float:
         # sequence matcher ratio is a decent baseline
         return float(SequenceMatcher(None, query_norm, candidate_norm).ratio())
+        # The first parameter is called isjunk.
+        # It’s a function you can provide to tell the matcher which characters (or elements) should be ignored when comparing.
+        # Example: you might want to ignore spaces or punctuation when comparing strings.
+        # resolver.candidates(t, n=1, cutoff=0.4)
 
+
+    # First checks phone digits.
+    # Then checks exact name match.
+    # Then falls back to substring or fuzzy similarity.
+    # Returns the top n candidates with scores ≥ cutoff.
     def candidates(self, query: str, n: int = 5, cutoff: float = 0.40) -> List[Tuple[str, float]]:
         """
         Return up to n candidate canonical names with score >= cutoff (descending by score).
@@ -131,13 +144,19 @@ class ContactResolver:
                 if q in cand or cand in q:
                     best = max(best, 0.8)
                 else:
-                    best = max(best, self._score_pair(q, cand))
+                    best = max(best, self._score_pair(q, cand)) # q is the token provided by the query and cand is the candidate from the contact list
             if best >= cutoff:
                 scored.append((k, best))
 
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:n]
 
+
+
+    # Accepts if only one candidate.
+    # Accepts if top candidate is clearly stronger than second.
+    # Accepts if top candidate is very strong.
+    # Otherwise, returns None to avoid mistakes as if the difference is too less then it means that the query is ambiguous and we should ask for clarification instead of guessing wrong.
     def find_best(self, query: str, cutoff: float = 0.6) -> Optional[str]:
         """
         Return a single canonical name if a candidate surpasses cutoff; otherwise None.
